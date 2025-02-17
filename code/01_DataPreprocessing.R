@@ -13,12 +13,7 @@ setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TABLE <- "/data/yzwang/project/AEG_seiri/table_infos/"
 
-############
-# Functions
-
-contaminants <- c("Plantactinospora", "Wolbachia", "Mycetocola", "Buchnera",
-                  "Riemerella", "Methylobacterium", "Buchnera", "Bradyrhizobium", 
-                  "Phocaeicola", "Xanthomonas", "Cupriavidus", "Candidatus_Hodgkinia")
+contaminants <- colnames(read.table(paste0(DIR_TABLE, "contaminants.txt"), header = T))
 ### GC ###
 # Using 16S genus-level abundance matrix to generate 16S-based abundance matrix
 abund_gc_16S <- as.data.frame(read_excel(paste0(DIR_TABLE, "GC_16S_genus_abundance.xlsx")))
