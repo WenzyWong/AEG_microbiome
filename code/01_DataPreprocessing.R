@@ -20,6 +20,7 @@ abund_gc_16S <- as.data.frame(read_excel(paste0(DIR_TABLE, "GC_16S_genus_abundan
 rownames(abund_gc_16S) <- gsub("g__", "", abund_gc_16S$Genus)
 abund_gc_16S <- abund_gc_16S[ , -1]
 abund_gc_16S <- abund_gc_16S[!rownames(abund_gc_16S) %in% contaminants, ]
+saveRDS(abund_gc_16S, paste0(DIR_RDS, "GC_16S_abundance.rds"))
 
 # Using RNA-seq genus-level count matrix to generate RNA-based abundance matrix
 count_gc_RNA <- read.csv(paste0(DIR_TABLE, "GC_RNA_genus_count.csv"))
