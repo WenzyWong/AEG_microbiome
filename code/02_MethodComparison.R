@@ -11,6 +11,7 @@ library(paletteer)
 library(dplyr)
 library(ComplexHeatmap)
 library(ggplot2)
+library(phyloseq)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -114,9 +115,9 @@ p_density_cor_haemophilus <-
   stat_density2d(aes(colour = after_stat(level)), size = .5, alpha = 0.33) +
   scale_color_gradient(low = '#4F94CD85', high = '#A52A2A85') +
   ggtitle("Haemophilus - log2CPM") +
-  annotate("text", x = 1.5, y = 13.5, colour = 1,
+  annotate("text", x = 2.2, y = 13, colour = 1,
            label = paste0("Rs=",round(cor_haemophilus$r, 2),
-                          "\np",format.pval(cor_haemophilus$p.adj, 2))) +
+                          "\np=",format.pval(cor_haemophilus$p.adj, 2))) +
   xlab("RNA-seq") +
   ylab("16S rRNA") +
   theme_test() +
