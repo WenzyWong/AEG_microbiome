@@ -80,58 +80,23 @@ dev.off()
 overlap <- intersect(rownames(cpm_aeg), rownames(cpm_gc))
 overlap <- intersect(overlap, rownames(cpm_escc))
 
-over_aeg <- cpm_aeg[overlap, ]
-over_escc <- cpm_escc[overlap, ]
-over_stad <- cpm_gc[overlap, ]
+source("/data/yzwang/project/migration/utils/plot_beta_diversity.R")
 
-distBray <- vegdist(t(cbind(over_aeg, over_escc, over_stad)), method = "bray")
-distMtx <- as.matrix(distBray)
+tumour_aeg <- cpm_aeg[overlap, grepl("C", colnames(cpm_aeg))]
+tumour_escc <- cpm_escc[overlap, grepl("T", colnames(cpm_escc))]
+tumour_stad <- cpm_gc[overlap, grepl("CT", colnames(cpm_gc))]
+beta.tumour <- plot_beta_diversity(
+  abundance_list = list(AEG = tumour_aeg, ESCC = tumour_escc, STAD = tumour_stad),
+  colors = c("#B24745FF", "#80796BFF", "#DF8F44FF"),
+  output_file = file.path(DIR_RES, "B_Beta_diversity_tumours.pdf")
+)
 
-brayPCoA <- pcoa(distBray)
+normal_aeg <- cpm_aeg[overlap, grepl("N", colnames(cpm_aeg))]
+normal_escc <- cpm_escc[overlap, grepl("N", colnames(cpm_escc))]
+normal_stad <- cpm_gc[overlap, grepl("NT", colnames(cpm_gc))]
+beta.normal <- plot_beta_diversity(
+  abundance_list = list(AEG = normal_aeg, ESCC = normal_escc, STAD = normal_stad),
+  colors = c("#485682", "#60AB9E", "#5C8447"),
+  output_file = file.path(DIR_RES, "B_Beta_diversity_normals.pdf")
+)
 
-pcoaRes <- brayPCoA$values[ , "Relative_eig"]
-pcoa1 <- as.numeric(sprintf("%.3f", pcoaRes[1])) * 100
-pcoa2 <- as.numeric(sprintf("%.3f", pcoaRes[2])) * 100
-
-pcoaDraw <- as.data.frame(brayPCoA$vectors)[1:2]
-pcoaDraw$Samples <- colnames(cbind(over_aeg, over_escc, over_stad))
-pcoaDraw$Group <- c(rep("AEG", ncol(over_aeg)),
-                    rep("ESCC", ncol(over_escc)),
-                    rep("STAD", ncol(over_stad)))
-
-meanPcoa1 <- c(
-  mean(pcoaDraw$Axis.1[pcoaDraw$Group == "AEG"]),
-  mean(pcoaDraw$Axis.1[pcoaDraw$Group == "ESCC"]),
-  mean(pcoaDraw$Axis.1[pcoaDraw$Group == "STAD"]))
-meanPcoa2 <- c(
-  mean(pcoaDraw$Axis.2[pcoaDraw$Group == "AEG"]),
-  mean(pcoaDraw$Axis.2[pcoaDraw$Group == "ESCC"]),
-  mean(pcoaDraw$Axis.2[pcoaDraw$Group == "STAD"]))
-
-meanPoint <- data.frame(X = meanPcoa1, Y = meanPcoa2,
-                        Group = c("AEG", "ESCC", "STAD"))
-
-p_pcoa <-
-  ggplot(pcoaDraw, aes(x = Axis.1, y = Axis.2, color = Group)) +
-  geom_point(size = 0.7) +
-  geom_segment(aes(x = Axis.1, xend = c(rep(meanPoint[1, 1], ncol(over_aeg)),
-                                        rep(meanPoint[2, 1], ncol(over_escc)),
-                                        rep(meanPoint[3, 1], ncol(over_stad))),
-                   y = Axis.2, yend = c(rep(meanPoint[1, 2], ncol(over_aeg)),
-                                        rep(meanPoint[2, 2], ncol(over_escc)),
-                                        rep(meanPoint[3, 2], ncol(over_stad)))),
-               linewidth = 0.2) +
-  scale_color_manual(values = c("#485682", "#60AB9E", "#5C8447")) + 
-  labs(x = paste("PCoA1(", pcoa1, "%)", sep = ""),
-       y = paste("PCoA2(", pcoa2, "%)", sep = ""),
-       title = "PCoA: Bray-Curtis Distance") +
-  geom_hline(yintercept = 0, linetype = 4, color = "grey20", alpha = 0.6) + 
-  geom_vline(xintercept = 0, linetype = 4, color = "grey20", alpha = 0.6) + 
-  stat_ellipse(geom = "polygon", level = 0.95, alpha = 0.05) +
-  theme_classic() +
-  theme(axis.text = element_text(colour = 1),
-        legend.position = "top",
-        legend.direction = "horizontal")
-pdf(file.path(DIR_RES, "B_beta_diversity_among_cancer.pdf"), height = 3.4, width = 3)
-print(p_pcoa)
-dev.off()
