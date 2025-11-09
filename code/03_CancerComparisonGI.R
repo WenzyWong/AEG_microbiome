@@ -20,7 +20,7 @@ library(RColorBrewer)
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TABLE <- "/data/yzwang/project/AEG_seiri/table_infos/"
-DIR_TOOL <- "/data/yzwang/functions/"
+DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
 DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F1/"
 
 ##############
@@ -77,10 +77,10 @@ dev.off()
 
 ################
 # Beta diversity
+source(file.path(DIR_TOOL, "plot_beta_diversity.R"))
+
 overlap <- intersect(rownames(cpm_aeg), rownames(cpm_gc))
 overlap <- intersect(overlap, rownames(cpm_escc))
-
-source("/data/yzwang/project/migration/utils/plot_beta_diversity.R")
 
 tumour_aeg <- cpm_aeg[overlap, grepl("C", colnames(cpm_aeg))]
 tumour_escc <- cpm_escc[overlap, grepl("T", colnames(cpm_escc))]
@@ -100,3 +100,22 @@ beta.normal <- plot_beta_diversity(
   output_file = file.path(DIR_RES, "B_Beta_diversity_normals.pdf")
 )
 
+##################
+# Jaccard distance
+groups <- cbind(
+  AEG_T = rowMeans(tumour_aeg), AEG_N = rowMeans(normal_aeg),
+  ESCC_T = rowMeans(tumour_escc), ESCC_N = rowMeans(normal_escc),
+  STAD_T = rowMeans(tumour_stad), STAD_N = rowMeans(normal_stad)
+)
+
+jaccard_idx <- 1 - as.matrix(dist(t(groups), method = "binary"))
+
+pdf(file.path(DIR_RES, "C_Jaccard_index.pdf"), width = 5, height = 4.5)
+Heatmap(jaccard_idx, 
+        name = "Jaccard\nIndex",
+        col = RColorBrewer::brewer.pal(name = "OrRd", n = 4),
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        show_row_names = TRUE,
+        show_column_names = TRUE)
+dev.off()
