@@ -102,6 +102,43 @@ beta.normal <- plot_beta_diversity(
 
 ##################
 # Jaccard distance
+# All samples
+all_samples <- cbind(tumour_aeg, tumour_escc, tumour_stad, 
+                     normal_aeg, normal_escc, normal_stad)
+jaccard_dist <- as.matrix(dist(t(all_samples), method = "binary"))
+
+groups_ord <- c(
+  rep("AEG_T", ncol(tumour_aeg)),
+  rep("ESCC_T", ncol(tumour_escc)),
+  rep("STAD_T", ncol(tumour_stad)),
+  rep("AEG_N", ncol(normal_aeg)),
+  rep("ESCC_N", ncol(normal_escc)),
+  rep("STAD_N", ncol(normal_stad))
+)
+names(groups_ord) <- colnames(all_samples)
+
+group_anno <- HeatmapAnnotation(
+  Group = groups_ord,
+  col = list(Group = c(AEG_T = "#B24745FF",
+                       ESCC_T = "#80796BFF",
+                       STAD_T = "#DF8F44FF",
+                       AEG_N = "#485682FF",
+                       ESCC_N = "#60AB9EFF",
+                       STAD_N = "#5C8447FF"))
+)
+
+pdf(file.path(DIR_RES, "C_Jaccard_dist_all.pdf"), width = 6, height = 7)
+Heatmap(jaccard_dist, 
+        name = "Jaccard\nDistance",
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        col = RColorBrewer::brewer.pal(name = "RdBu", n = 11),
+        top_annotation = group_anno,
+        show_row_names = F,
+        show_column_names = F)
+dev.off()
+
+# Group means
 groups <- cbind(
   AEG_T = rowMeans(tumour_aeg), AEG_N = rowMeans(normal_aeg),
   ESCC_T = rowMeans(tumour_escc), ESCC_N = rowMeans(normal_escc),
@@ -119,3 +156,5 @@ Heatmap(jaccard_idx,
         show_row_names = TRUE,
         show_column_names = TRUE)
 dev.off()
+
+#### 
