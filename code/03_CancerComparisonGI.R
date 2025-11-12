@@ -255,7 +255,7 @@ p_top10_aeg <-
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
 pdf(file.path(DIR_RES, "D_abundance_top10_aeg.pdf"), width = 3, height = 7)
-print(p_top_escc)
+print(p_top10_aeg)
 dev.off()
 
 p_top10_stad <-
@@ -274,5 +274,71 @@ p_top10_stad <-
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
 pdf(file.path(DIR_RES, "D_abundance_top10_stad.pdf"), width = 3, height = 7)
-print(p_top_escc)
+print(p_top10_stad)
+dev.off()
+
+######################################
+# Compare overlapped genera separately
+box_genus <- setdiff(per_aeg$Genus, per_escc$Genus) %>%
+  setdiff(., per_stad$Genus)
+abund_box_comp <- cbind(cpm_escc[box_genus, ],
+                        cpm_aeg[box_genus, ],
+                        cpm_stad[box_genus, ])
+abund_box_comp$Genus <- rownames(abund_box_comp)
+abund_box_comp <- reshape2::melt(abund_box_comp)
+colnames(abund_box_comp) <- c("Genus", "Sample", "Relative Abundance")
+
+abund_box_comp$Cancer <- c(
+  rep("ESCC", ncol(cpm_escc)),
+  rep("AEG", ncol(cpm_aeg)),
+  rep("STAD", ncol(cpm_stad))
+)
+abund_box_comp$`log2 RA` <- log2(abund_box_comp$`Relative Abundance` / 1e4 + 1)
+p_box_genus <-
+  ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
+          col = "Cancer", palette = "jco", add = "jitter",
+          facet.by = "Genus") +
+  stat_compare_means(comparisons = list(c("ESCC", "AEG"),
+                                        c("AEG", "STAD"))) + 
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1)) 
+pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"), width = 6, height = 4)
+print(p_box_genus)
+dev.off()
+
+##########################
+# AEG overall distribution
+abund_aeg_distribution <- cpm_aeg / 1e4
+abund_aeg_distribution <- abund_aeg_distribution[names(abund_aeg)[abund_aeg > 1], ]
+
+abund_aeg_distribution <- rbind(abund_aeg_distribution, 
+                                Others = 100 - apply(abund_aeg_distribution, MARGIN = 2, FUN = sum)) 
+abund_aeg_distribution <- abund_aeg_distribution[, order(unlist(abund_aeg_distribution[1,]),
+                                                         decreasing = T)]
+abund_aeg_distribution$Genus <- rownames(abund_aeg_distribution)
+
+colAbund <- c("#64A4CC", "#9CCEE3", "#ADE0DC", "#CAEAD2", "#D3F2D6", 
+              "#ECF6C8", "#FEEDAA", "#FDC980", "#F89D59", "#E75B3A", 
+              "#CD2626", "#D7191C", "#9A342C", "#DCDCDC")
+
+long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
+
+p_aeg_distribution <-
+  ggplot(data = long_distribution, aes(x = variable, y = value, 
+                                     alluvium = factor(Genus, levels = unique(Genus)))) +
+  geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus))), alpha = 1) +
+  scale_fill_manual(values = colAbund,
+                    name = "Genus") +
+  xlab("Samples") +
+  ylab("Relative abundance (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), 
+        axis.text.y = element_text(colour = 1),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.spacing.x = element_blank())
+pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_1.pdf"),
+    width = 5, height = 4)
+print(p_aeg_distribution)
 dev.off()
