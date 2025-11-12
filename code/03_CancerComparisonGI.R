@@ -19,27 +19,18 @@ library(RColorBrewer)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
-DIR_TABLE <- "/data/yzwang/project/AEG_seiri/table_infos/"
 DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
 DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F1/"
 
 ##############
 # Data loading
-cpm_escc <- readRDS(paste0(DIR_RDS, "gESCC_cpm.rds"))
-cpm_escc <- cpm_escc[ , grep("GSE235537", colnames(cpm_escc))]
+cpm_escc <- readRDS(paste0(DIR_RDS, "gESCC_cpm_2cohorts.rds"))
 cpm_gc <- readRDS(paste0(DIR_RDS, "gGC_CPM_RNA_WithoutCompFilt.rds"))
 cpm_aeg <- readRDS(paste0(DIR_RDS, "gAEG_CPM_RNA_WithoutCompFilt.rds"))
 
-count_escc <- readRDS(paste0(DIR_RDS, "gESCC_count.rds"))
-count_escc <- count_escc[ , grep("GSE235537", colnames(count_escc))]
+count_escc <- readRDS(paste0(DIR_RDS, "gESCC_count_2cohorts.rds"))
 count_gc <- readRDS(paste0(DIR_RDS, "gGC_count_RNA.rds"))
 count_aeg <- readRDS(paste0(DIR_RDS, "gAEG_count.rds"))
-
-ESCC_selected_data <- as.data.frame(read_excel(file.path(DIR_TABLE, "ESCC_selected_data.xlsx")))
-rownames(ESCC_selected_data) <- ESCC_selected_data$Run
-colnames(cpm_escc) <- gsub("GSE235537.", "", colnames(cpm_escc))
-colnames(cpm_escc) <- paste0(ESCC_selected_data[colnames(cpm_escc), "Type"],
-                             ESCC_selected_data[colnames(cpm_escc), "Patient"])
 
 #################
 # Alpha diversity
@@ -82,8 +73,16 @@ source(file.path(DIR_TOOL, "plot_beta_diversity.R"))
 overlap <- intersect(rownames(cpm_aeg), rownames(cpm_gc))
 overlap <- intersect(overlap, rownames(cpm_escc))
 
+beta <- plot_beta_diversity(
+  abundance_list = list(AEG = cpm_aeg, 
+                        ESCC = cpm_escc, 
+                        STAD = cpm_gc),
+  colors = c("#485682", "#60AB9E", "#5C8447"),
+  output_file = file.path(DIR_RES, "B_Beta_diversity_all.pdf")
+)
+
 tumour_aeg <- cpm_aeg[overlap, grepl("C", colnames(cpm_aeg))]
-tumour_escc <- cpm_escc[overlap, grepl("T", colnames(cpm_escc))]
+tumour_escc <- cpm_escc[overlap, grepl("_T|_D", colnames(cpm_escc))]
 tumour_stad <- cpm_gc[overlap, grepl("CT", colnames(cpm_gc))]
 beta.tumour <- plot_beta_diversity(
   abundance_list = list(AEG = tumour_aeg, ESCC = tumour_escc, STAD = tumour_stad),
@@ -92,7 +91,7 @@ beta.tumour <- plot_beta_diversity(
 )
 
 normal_aeg <- cpm_aeg[overlap, grepl("N", colnames(cpm_aeg))]
-normal_escc <- cpm_escc[overlap, grepl("N", colnames(cpm_escc))]
+normal_escc <- cpm_escc[overlap, grepl("_N", colnames(cpm_escc))]
 normal_stad <- cpm_gc[overlap, grepl("NT", colnames(cpm_gc))]
 beta.normal <- plot_beta_diversity(
   abundance_list = list(AEG = normal_aeg, ESCC = normal_escc, STAD = normal_stad),
@@ -127,7 +126,7 @@ group_anno <- HeatmapAnnotation(
                        STAD_N = "#5C8447FF"))
 )
 
-pdf(file.path(DIR_RES, "C_Jaccard_dist_all.pdf"), width = 6, height = 7)
+pdf(file.path(DIR_RES, "C_Jaccard_dist_all.pdf"), width = 7, height = 6)
 Heatmap(jaccard_dist, 
         name = "Jaccard\nDistance",
         cluster_rows = TRUE,
