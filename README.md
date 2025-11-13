@@ -14,7 +14,7 @@
 
 ### Esophageal squamous cell carcinoma (ESCC)
 
-- Data originated from [GEO database](https://www.ncbi.nlm.nih.gov/geo/) under the accession number GSE164158, GSE201154, GSE201699, and GSE235537.
+- Data originated from [SRA datasets](https://www.ncbi.nlm.nih.gov/sra/) under the accession number SRP445300 (22 samples) and DRP012115 (16 samples).
 
 - Data structure:
 
