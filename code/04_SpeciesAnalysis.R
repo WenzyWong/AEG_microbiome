@@ -22,6 +22,7 @@ library(igraph)
 library(network)
 library(sna)
 library(tidyverse)
+library(tidyfst)
 library(ggClusterNet) # other requirements: ggraph, tidyfst
 
 setwd("/data/yzwang/project/AEG_seiri/")
@@ -41,7 +42,7 @@ clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 ##############################
 # Circle plot of genus-species
 # Allocate positions for species
-gAbund <- gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
+gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
 gAbund <- gAbund[gAbund > 1]
 indexSp <- c() # The species index in the cpm matrix, assigned to each genus
 for (g in names(gAbund)) {
@@ -397,6 +398,10 @@ tab <- network.pip(ps = ps.obj, N = 200, # ra = 0.05,
                    ram.net = TRUE, clu_method = "cluster_fast_greedy",
                    step = 100, R = 10, ncpus = 6
 )
+saveRDS(tab, file.path(DIR_RDS, "AEG_network.rds"))
+
+cortab <- tab[[2]]$net.cor.matrix$cortab
+saveRDS(cortab, file.path(DIR_RDS, "AEG_network_cor.rds"))
 
 # Network plot
 # Filter out viruses
@@ -466,8 +471,6 @@ plots[[3]] +
         axis.text = element_text(colour = 1))
 dev.off()
 
-cortab <- tab[[2]]$net.cor.matrix$cortab
-
 # Network destruction resistance
 resis <- natural.con.microp(ps = ps.obj, corg = cortab,
                             norm = TRUE, end = 150, start = 0)
@@ -481,3 +484,68 @@ resis[[1]] +
         axis.text = element_text(colour = 1))
 dev.off()
 write.csv(resis[[2]], file.path(DIR_TAB, "./Res2_network_resistance.csv"))
+
+####################
+# Network similarity
+module <- module.compare.m(ps = NULL, corg = cortab, zipi = FALSE,
+                           zoom = 0.2, padj = F, n = 3)
+saveRDS(module, file.path(DIR_RDS, "AEG_network_module.rds"))
+
+pdf(file.path(DIR_RES, "C_net_module.pdf"), width = 4, height = 4)
+module[[1]]
+dev.off()
+
+module_otu <- module[[2]]
+module_otu$taxa_g <- tax_table[module_otu$ID, "Rank6"]
+module_otu$taxa_s <- tax_table[module_otu$ID, "Rank7"]
+module_otu <- module_otu %>%
+  filter(taxa_g != "g__",
+         taxa_s != "s__") %>%
+  mutate(standard_name = paste0(gsub("g__", "", taxa_g)  %>% 
+                                  toTitleCase(.), "_", 
+                                gsub("s__", "", taxa_s)),)
+
+#mutate(standard_name = paste0(gsub("g__", "", taxa_g) %>% 
+#                               substr(., 1, 1) %>% 
+#                               toupper(.), ".", 
+#                              gsub("s__", "", taxa_s)),)
+
+head(module_otu)
+table(module_otu$group)
+
+module_simi <- module[[3]]
+
+module_simi$m1 <- module_simi$module1 %>% strsplit("model") %>%
+  sapply(`[`, 1)
+module_simi$m2 <- module_simi$module2 %>% strsplit("model") %>%
+  sapply(`[`, 1)
+module_simi$cross <- paste(module_simi$m1,module_simi$m2,sep = "_Vs_")
+
+module_simi <- module_simi %>% 
+  filter(module1 != "none")
+head(module_simi)
+
+# Aggregate standard names by group in module_otu
+module_species <- module_otu %>%
+  group_by(group) %>%
+  summarise(species = paste(standard_name, collapse = "|"),
+            otu = paste(ID, collapse = "|"))
+
+# The biggest normal module that does not resemble any tumour module
+saving_module <- data.frame(
+  Species = strsplit(module_species$species[1], "\\|")[[1]],
+  OTU = strsplit(module_species$otu[1], "\\|")[[1]]
+) %>%
+  merge(., node, by.x = "OTU", by.y = "ID")
+abund_sp <- apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4
+saving_module$abundance <- abund_sp[saving_module$Species]
+saving_module <- na.omit(saving_module)
+
+saving_normal <- saving_module %>%
+  filter(Group == "Normal") %>%
+  mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
+         rank_closseness = rank(-igraph.closeness, ties.method = "min"),
+         rank_betweenness = rank(igraph.betweenness, ties.method = "min"),
+         rank_abundance = rank(-abundance, ties.method = "min")) %>%
+  mutate(rank = rank_degree + rank_closseness + 
+           rank_betweenness + rank_abundance)
