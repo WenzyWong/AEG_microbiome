@@ -5,12 +5,24 @@
 # Step 04. Analyse AEG-specific microbiome
 #
 #######################################################
+#remotes::install_github("taowenmicro/EasyStat")
+#remotes::install_github("taowenmicro/ggClusterNet")
+#remotes::install_github("zdk123/SpiecEasi")
+
 library(vegan)
 library(dplyr)
 library(ggpubr)
 library(ggplot2)
 library(survival)
 library(survminer)
+library(paletteer)
+# Network analysis requirements
+library(phyloseq)
+library(igraph)
+library(network)
+library(sna)
+library(tidyverse)
+library(ggClusterNet) # other requirements: ggraph, tidyfst
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -366,3 +378,58 @@ surv_res$plot +
     size = 5
   )
 dev.off()
+
+##################
+# Network analysis
+ps.obj <- import_biom("./aeg.biom")
+sample_data(ps.obj)$ID <- sample_data(ps.obj)$Id
+sample_data(ps.obj)$group <- ifelse(grepl("C", sample_data(ps.obj)$Id), 
+                                    "Tumour", 
+                                    "Normal")
+tab <- network.pip(ps = ps.obj, N = 200, # ra = 0.05,
+                   big = FALSE, select_layout = FALSE,
+                   layout_net = "model_maptree2",
+                   r.threshold = 0.6, p.threshold = 0.05,
+                   maxnode = 2, method = "kendall",
+                   label = FALSE, lab = "elements",
+                   group = "group", fill = "Species",
+                   size = "igraph.degree", zipi = TRUE,
+                   ram.net = TRUE, clu_method = "cluster_fast_greedy",
+                   step = 100, R = 10, ncpus = 6
+)
+
+plots <- tab[[1]]
+
+pdf(file.path(DIR_RES, "C_net_connectivity_tn.pdf"), width = 6, height = 5)
+plots[[2]]
+dev.off()
+
+if("2099" %in% rownames(tax_table)) {
+  taxonomy_2099 <- tax_table["2099", ]
+  print(taxonomy_2099)
+}
+
+pdf(file.path(DIR_RES, "C_net_randomness_tn.pdf"), width = 6, height =5)
+plots[[3]] +
+  scale_colour_manual(values = c("#0073C2FF", "#EFC000FF")) +
+  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF")) +
+  labs(x = NULL,
+       y = NULL) +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+dev.off()
+
+cortab <- tab[[2]]$net.cor.matrix$cortab
+
+# Network destruction resistance
+resis <- natural.con.microp(ps = ps.obj, corg = cortab,
+                            norm = TRUE, end = 150, start = 0)
+pdf(DIR_RES, "")
+resis[[1]] +
+  scale_colour_manual(values = c(Normal = "#126CAA", 
+                                 Tumour = "#9A342C")) +
+  labs(x = "Number of removed nodes",
+       y = "Natural connectivity") +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+write.csv(stab[[2]], file.path(DIR_TAB, "./Res2_network_resistance.csv"))
