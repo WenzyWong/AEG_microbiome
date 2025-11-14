@@ -398,6 +398,53 @@ tab <- network.pip(ps = ps.obj, N = 200, # ra = 0.05,
                    step = 100, R = 10, ncpus = 6
 )
 
+# Network plot
+# Filter out viruses
+net_dt <- tab[[2]]
+node <- net_dt$net.cor.matrix$node %>%
+  filter(Rank1 != "k__Viruses",
+         igraph.degree != 0)
+edge <- net_dt$net.cor.matrix$edge %>%
+  filter(OTU_1 %in% node$ID & OTU_2 %in% node$ID)
+
+# Replace blank ranks with "unclassified"
+rank_cols <- paste0("Rank", 1:7)
+for (col in rank_cols) {
+  node[[col]] <- ifelse(grepl("^[a-z]__$", node[[col]]), 
+                        paste0(sub("__$", "", node[[col]]), "__unclassified"), 
+                        node[[col]])
+}
+
+node_highlight <- node[node$ID %in% c("2099", "1351"), ] %>%
+  mutate(standard_name = paste0(gsub("g__", "", Rank6) %>% 
+                                  substr(., 1, 1) %>% 
+                                  toupper(.), ".", 
+                                gsub("s__", "", Rank7)),)
+
+pdf(file.path(DIR_RES, "C_net.pdf"), width = 12, height = 5)
+ggplot() + 
+  geom_segment(data = edge, alpha = 0.3,
+               aes(x = X1, y = Y1, xend = X2, yend = Y2, 
+                   linewidth = weight)) +
+  scale_linewidth_continuous(range = c(0.01, 0.05)) +
+  geom_point(data = node, pch = 21, color = "gray40",
+             aes(X1, X2, fill = Rank2, size = igraph.degree)) +
+  scale_fill_manual(values = rev(paletteer_d("ggsci::lanonc_lancet"))) +
+  facet_wrap(.~ label, scales = "free_y", nrow = 1) +
+  geom_text(data = node_highlight, aes(X1, X2, label = standard_name)) +
+  scale_size(range = c(0.8, 5)) +
+  scale_x_continuous(breaks = NULL) +
+  scale_y_continuous(breaks = NULL) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.background = element_rect(colour = NA),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank())
+dev.off()
+
+# Other plots
 plots <- tab[[1]]
 
 pdf(file.path(DIR_RES, "C_net_connectivity_tn.pdf"), width = 6, height = 5)
@@ -424,7 +471,7 @@ cortab <- tab[[2]]$net.cor.matrix$cortab
 # Network destruction resistance
 resis <- natural.con.microp(ps = ps.obj, corg = cortab,
                             norm = TRUE, end = 150, start = 0)
-pdf(DIR_RES, "")
+pdf(file.path(DIR_RES, "C_net_resistance.pdf"), width = 5, height = 4)
 resis[[1]] +
   scale_colour_manual(values = c(Normal = "#126CAA", 
                                  Tumour = "#9A342C")) +
@@ -432,4 +479,5 @@ resis[[1]] +
        y = "Natural connectivity") +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1))
-write.csv(stab[[2]], file.path(DIR_TAB, "./Res2_network_resistance.csv"))
+dev.off()
+write.csv(resis[[2]], file.path(DIR_TAB, "./Res2_network_resistance.csv"))
