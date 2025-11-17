@@ -26,17 +26,17 @@ DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F1/"
 # Data loading
 cpm_escc <- readRDS(paste0(DIR_RDS, "gESCC_cpm_2cohorts.rds"))
 cpm_stad <- readRDS(paste0(DIR_RDS, "gGC_CPM_RNA_WithoutCompFilt.rds"))
-cpm_aeg <- readRDS(paste0(DIR_RDS, "gAEG_CPM_RNA_WithoutCompFilt.rds"))
+cpm_aeg <- readRDS(paste0(DIR_RDS, "gAEG_CPM_RNA_FiltMyco.rds"))
 
 count_escc <- readRDS(paste0(DIR_RDS, "gESCC_count_2cohorts.rds"))
 count_stad <- readRDS(paste0(DIR_RDS, "gGC_count_RNA.rds"))
-count_aeg <- readRDS(paste0(DIR_RDS, "gAEG_count.rds"))
+count_aeg <- readRDS(paste0(DIR_RDS, "gAEG_Count_RNA_FiltMyco.rds"))
 
 #################
 # Alpha diversity
-shan_aeg <- apply(count_aeg, 2, diversity)
-shan_stad <- apply(count_stad, 2, diversity)
-shan_escc <- apply(count_escc, 2, diversity)
+shan_aeg <- apply(count_aeg, 2, vegan::diversity)
+shan_stad <- apply(count_stad, 2, vegan::diversity)
+shan_escc <- apply(count_escc, 2, vegan::diversity)
 
 shan_violin <- data.frame(
   Shannon = c(shan_aeg, shan_escc, shan_stad),
@@ -50,8 +50,8 @@ shan_comp_list <- list(c("AEG", "ESCC"),
                        c("AEG", "STAD"),
                        c("ESCC", "STAD"))
 
-p_shan_violin <-
-  ggplot(shan_violin, aes(x = Cancer, y = Shannon, fill = Cancer)) +
+pdf(file.path(DIR_RES, "A_alpha_diversity_among_cancer.pdf"), height = 3.3, width = 4)
+ggplot(shan_violin, aes(x = Cancer, y = Shannon, fill = Cancer)) +
   geom_violin() +
   scale_fill_manual(values = c("#60AB9EFF", "#485682FF", "#5C8447FF")) +
   geom_boxplot(width = .2, fill = "grey75",
@@ -64,8 +64,6 @@ p_shan_violin <-
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1)) 
-pdf(file.path(DIR_RES, "A_alpha_diversity_among_cancer.pdf"), height = 3.3, width = 4)
-print(p_shan_violin)
 dev.off()
 
 ################
@@ -222,8 +220,8 @@ col_stad <- c("Pasteurella" = "#9CCEE3",
               "Streptococcus" = "#9A342C",
               "Other" = "#DCDCDC")
 
-p_top_escc <-
-  ggplot(per_escc) +
+pdf(file.path(DIR_RES, "D_abundance_top10_escc.pdf"), width = 3, height = 7)
+ggplot(per_escc) +
   geom_bar(aes(x = 1, y = Abundance, 
                fill = factor(Genus, levels = unique(Genus))), 
            stat = "identity", position = "stack") +
@@ -237,12 +235,10 @@ p_top_escc <-
         panel.grid.minor = element_blank(),
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
-pdf(file.path(DIR_RES, "D_abundance_top10_escc.pdf"), width = 3, height = 7)
-print(p_top_escc)
 dev.off()
 
-p_top10_aeg <-
-  ggplot(per_aeg) +
+pdf(file.path(DIR_RES, "D_abundance_top10_aeg.pdf"), width = 3, height = 7)
+ggplot(per_aeg) +
   geom_bar(aes(x = 1, y = Abundance, 
                fill = factor(Genus, levels = unique(Genus))), 
            stat = "identity", position = "stack") +
@@ -256,12 +252,10 @@ p_top10_aeg <-
         panel.grid.minor = element_blank(),
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
-pdf(file.path(DIR_RES, "D_abundance_top10_aeg.pdf"), width = 3, height = 7)
-print(p_top10_aeg)
 dev.off()
 
-p_top10_stad <-
-  ggplot(per_stad) +
+pdf(file.path(DIR_RES, "D_abundance_top10_stad.pdf"), width = 3, height = 7)
+ggplot(per_stad) +
   geom_bar(aes(x = 1, y = Abundance, 
                fill = factor(Genus, levels = unique(Genus))), 
            stat = "identity", position = "stack") +
@@ -275,8 +269,6 @@ p_top10_stad <-
         panel.grid.minor = element_blank(),
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
-pdf(file.path(DIR_RES, "D_abundance_top10_stad.pdf"), width = 3, height = 7)
-print(p_top10_stad)
 dev.off()
 
 ######################################
@@ -296,8 +288,8 @@ abund_box_comp$Cancer <- c(
   rep("STAD", ncol(cpm_stad))
 )
 abund_box_comp$`log2 RA` <- log2(abund_box_comp$`Relative Abundance` / 1e4 + 1)
-p_box_genus <-
-  ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
+pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"), width = 6, height = 4)
+ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
           col = "Cancer", palette = "jco", add = "jitter",
           facet.by = "Genus") +
   stat_compare_means(comparisons = list(c("ESCC", "AEG"),
@@ -305,7 +297,6 @@ p_box_genus <-
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1)) 
-pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"), width = 6, height = 4)
 print(p_box_genus)
 dev.off()
 
@@ -322,12 +313,13 @@ abund_aeg_distribution$Genus <- rownames(abund_aeg_distribution)
 
 colAbund <- c("#64A4CC", "#9CCEE3", "#ADE0DC", "#CAEAD2", "#D3F2D6", 
               "#ECF6C8", "#FEEDAA", "#FDC980", "#F89D59", "#E75B3A", 
-              "#CD2626", "#D7191C", "#9A342C", "#DCDCDC")
+              "#CD2626", "#9A342C", "#DCDCDC")
 
 long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
 
-p_aeg_distribution <-
-  ggplot(data = long_distribution, aes(x = variable, y = value, 
+pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_1.pdf"),
+    width = 6, height = 4)
+ggplot(data = long_distribution, aes(x = variable, y = value, 
                                      alluvium = factor(Genus, levels = unique(Genus)))) +
   geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus))), alpha = 1) +
   scale_fill_manual(values = colAbund,
@@ -340,7 +332,4 @@ p_aeg_distribution <-
         panel.grid.minor = element_blank(),
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
-pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_1.pdf"),
-    width = 5, height = 4)
-print(p_aeg_distribution)
 dev.off()
