@@ -16,6 +16,8 @@ library(ggplot2)
 library(survival)
 library(survminer)
 library(paletteer)
+library(circlize)
+library(ComplexHeatmap)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
@@ -33,9 +35,9 @@ DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
 
 ##############
 # Data loading
-mtx_gcpm <- readRDS(file.path(DIR_RDS, "gAEG_CPM_RNA_WithoutCompFilt.rds"))
-mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA.rds"))
-mtx_count <- readRDS(file.path(DIR_RDS, "sAEG_Count_RNA.rds"))
+mtx_gcpm <- readRDS(file.path(DIR_RDS, "gAEG_CPM_RNA_FiltMyco.rds"))
+mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
+mtx_count <- readRDS(file.path(DIR_RDS, "sAEG_Count_RNA_FiltMyco.rds"))
 # Clinical information (without filtering)
 clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 
@@ -60,20 +62,22 @@ abundSpTop <- data.frame(
 
 # drawHR1 contains the clinical information of the samples
 drawHR1 <- data.frame(
-  Sample = paste0("C", clinical$No.),
-  Time = clinical$`Survival time（Month）`,
-  State = clinical$`Status（1=Dead, 0=Alive）`
-)
+  sample = paste0("C", clinical$No.),
+  time = clinical$`Survival time（Month）`,
+  state = clinical$`Status（1=Dead, 0=Alive）`
+) %>%
+  filter(sample %in% colnames(mtx_cpm))
 
 # drawHR2 contains the log2CPM values of species
-drawHR2 <- as.data.frame(t(log2(mtx_cpm[rownames(abundSpTop), drawHR1$Sample] + 1)))
+drawHR2 <- as.data.frame(t(log2(mtx_cpm[rownames(abundSpTop), drawHR1$sample] + 1)))
 colnames(drawHR2) <- abundSpTop$Species
-drawHR2$Sample <- rownames(drawHR2) # Used for merge only
+drawHR2$sample <- rownames(drawHR2) # Used for merge only
 
-drawHR <- merge(drawHR1, drawHR2, by = "Sample")
+drawHR <- merge(drawHR1, drawHR2, by = "sample")
 
 # Calculating HR
-hrRes <- hrCalc(abundSpTop$Species, drawHR, 1.1, 0.9, 0.05)
+source(file.path(DIR_TOOL, "hr_calc.R"))
+hrRes <- hr_calc(abundSpTop$Species, drawHR, 1.1, 0.9, 0.05)
 # The warnings exist because all the tumour CPM values of these species equals to 0
 
 abundSpTop$Surv.HR <- hrRes$HR
@@ -102,6 +106,7 @@ abundSpTop$Genus <- tmpGenera
 abundSpTop$X <- tmpX
 
 # Calculating differential
+source(file.path(DIR_TOOL, "wilcox_diff.R"))
 diffSp <- wilcox_diff(mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
                                 abundSpTop$Species, ],
                       mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
@@ -117,7 +122,7 @@ abundSpTop$Diff.Trend <- diffSp$Change
 abundSpTop$Diff.Padj <- diffSp$P.adj
 abundSpTop$Diff.Log2FC <- diffSp$log2FC
 
-saveRDS(abundSpTop, paste0(dirRDS, "sAEG_CirclizeData_AbundSpTop.rds"))
+saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop.rds"))
 
 # Preparing for circlize drawing
 colGenera <- c("#8AB9C480",
@@ -236,10 +241,10 @@ for (i in 1:length(gAbund)) {
     circos.trackLines(sectors = sectors[i],
                       x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
                       y = if_else(
-                        abundSpTop$Surv.Risk[cnt] != "NoTrend", -2.4, -2.3
+                        abundSpTop$Surv.Risk[cnt] != "NS", -2.4, -2.3
                       ),
                       col = if_else(
-                        abundSpTop$Surv.Risk[cnt] != "NoTrend", "black", "white"
+                        abundSpTop$Surv.Risk[cnt] != "NS", "black", "white"
                       ),
                       type = "h",
                       baseline = -2.3)
@@ -262,9 +267,7 @@ for (i in 1:length(gAbund)) {
                       ),
                       type = "h",
                       baseline = -4.3)
-    circos.points(x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j], 
-                  y = log2(1001) * (12 / max(abundSpTop$log2CPM)), 
-                  pch = 16, cex = 0.5, col = "darkred")
+
   }
   # The names of sectors (genera)
   circos.trackText(sectors = sectors[i],
@@ -308,7 +311,7 @@ dev.off()
 #######################################
 # Alpha-diversity & ecological distance
 mtx_count_t <- mtx_count[ , grepl("C", colnames(mtx_count))]
-shan_tumour <- apply(mtx_count_t, 2, diversity)
+shan_tumour <- apply(mtx_count_t, 2, vegan::diversity)
 dist_tumour <- clinical$`Distance from the tumor center to the esophagogastric junction()`
 names(dist_tumour) <- paste0("C", clinical$No.)
 
@@ -366,7 +369,45 @@ surv_res <- ggsurvplot(sfit, conf.int = T, pval = F, risk.table = F,
                          theme(panel.border = element_rect(fill = NA, colour = 1),
                                axis.text = element_text(colour = 1)))
 # Adding HR and its p-value to KM curve
-hr_shan <- hr_calc("shannon", df_surv, 1.1, 0.9, 0.05)
+df_hr <- merge(df_surv, clinical %>% mutate(No. = paste0("C", No.)),
+               by.x = "sample", by.y = "No.", all.x = T, all.y = F) 
+colnames(df_hr) <- gsub(" ", "_", colnames(df_hr))
+
+df_hr <- df_hr %>%
+  mutate(Pathological_stage = case_when(
+    Pathological_stage == "IB" ~ 1.5,
+    Pathological_stage == "IIA" ~ 2,
+    Pathological_stage == "IIB" ~ 2.5,
+    Pathological_stage == "IIIA" ~ 3,
+    Pathological_stage == "IIIB" ~ 3.3,
+    Pathological_stage == "IIIC" ~ 3.6,
+    Pathological_stage %in% c("IV", "IV") ~ 4
+  ))
+
+hr_clinic <- hr_calc(c("shannon", "Age", "Sex", "Smoking", "Alcohol",
+                       "Pathological_stage"), df_hr, 1.1, 0.9, 0.05) %>%
+  arrange(desc(HR)) %>%
+  mutate(index = factor(rownames(.), levels = rownames(.)))
+
+pdf(file.path(DIR_RDS, "B_hr_alphadiv_clinic.pdf"), width = 4, height = 4)
+ggplot(hr_clinic, aes(x = HR, y = index,
+                     color = Risk)) +
+  geom_point(shape = 15, size = 5) +
+  scale_color_manual(values = c("Decrease" = "#126CAA", 
+                                "NS" = "grey", 
+                                "Increase" = "#9A342C")) +
+  geom_errorbar(aes(xmin = HR.95L, xmax = HR.95H),
+                width = .2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  xlab("Hazard Ratio (95% CI)") +
+  ylab("Index") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        panel.grid = element_blank(),
+        axis.text = element_text(colour = 1))
+dev.off()
+
+hr_shan <- hr_calc("shannon", df_hr, 1.1, 0.9, 0.05)
 hr_shan
 
 pdf(file.path(DIR_RES, "B_alpha_km.pdf"), width = 3.8, height = 4)
