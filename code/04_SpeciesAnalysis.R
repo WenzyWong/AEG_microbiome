@@ -389,7 +389,7 @@ hr_clinic <- hr_calc(c("shannon", "Age", "Sex", "Smoking", "Alcohol",
   arrange(desc(HR)) %>%
   mutate(index = factor(rownames(.), levels = rownames(.)))
 
-pdf(file.path(DIR_RDS, "B_hr_alphadiv_clinic.pdf"), width = 4, height = 4)
+pdf(file.path(DIR_RES, "B_hr_alphadiv_clinic.pdf"), width = 4.5, height = 4)
 ggplot(hr_clinic, aes(x = HR, y = index,
                      color = Risk)) +
   geom_point(shape = 15, size = 5) +
