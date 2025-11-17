@@ -136,7 +136,9 @@ Heatmap(jaccard_dist,
         col = RColorBrewer::brewer.pal(name = "RdBu", n = 11),
         top_annotation = group_anno,
         show_row_names = F,
-        show_column_names = F)
+        show_column_names = F,
+        clustering_method_rows = "ward.D2",
+        clustering_method_columns = "ward.D2")
 dev.off()
 
 # Group means
