@@ -26,6 +26,9 @@ library(sna)
 library(tidyverse)
 library(tidyfst)
 library(ggClusterNet) # other requirements: ggraph, tidyfst
+# Regression
+library(compositions)
+library(glmnet)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -341,6 +344,30 @@ ggboxplot(dist_groups, x = "dist_group", y = "shannon",
         axis.text = element_text(colour = 1)) # NS
 dev.off()
 
+# Alpha-diversity & siewart type
+siewart_tumour <- clinical$`Siewert type`
+names(siewart_tumour) <- paste0("C", clinical$No.)
+siewart_tumour <- siewart_tumour[overlap_samples]
+
+siewart_groups <- data.frame(
+  sample = overlap_samples,
+  siewart = siewart_tumour,
+  shannon = shan_tumour
+) %>%
+  mutate(siewart = factor(siewart, levels = c("I", "II", "III")))
+pdf(file.path(DIR_RES, "Test_alpha_siewart.pdf"), width = 4, height = 3.2)
+ggboxplot(siewart_groups, x = "siewart", y = "shannon",
+          col = "siewart", palette = "jco", add = "jitter") +
+  stat_compare_means(comparisons = list(c("I", "II"),
+                                        c("II", "III"),
+                                        c("I", "III"))) + 
+  xlab("Siewart type") +
+  ylab("Shannon index") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1)) # NS
+dev.off()
+
 #############################
 # Alpha diversity & prognosis
 source(file.path(DIR_TOOL, "hr_calc.R"))
@@ -382,10 +409,19 @@ df_hr <- df_hr %>%
     Pathological_stage == "IIIB" ~ 3.3,
     Pathological_stage == "IIIC" ~ 3.6,
     Pathological_stage %in% c("IV", "IV") ~ 4
-  ))
+  ),
+  Differentiated_degree = case_when(
+    Differentiated_degree == "Moderately differentiated" ~ 1,
+    Differentiated_degree == "Low differentiated" ~ 2,
+    Differentiated_degree == "Poorly differentiated" ~ 3
+  ),
+  Smoking = if_else(Smoking == "No", 0, 1),
+  Alcohol = if_else(Alcohol == "No", 0, 1)
+  )
 
-hr_clinic <- hr_calc(c("shannon", "Age", "Sex", "Smoking", "Alcohol",
-                       "Pathological_stage"), df_hr, 1.1, 0.9, 0.05) %>%
+hr_clinic <- hr_calc(c("shannon", "Age", "Smoking", "Alcohol",
+                       "Pathological_stage", "Differentiated_degree"), 
+                     df_hr, 1.1, 0.9, 0.05) %>%
   arrange(desc(HR)) %>%
   mutate(index = factor(rownames(.), levels = rownames(.)))
 
@@ -416,7 +452,7 @@ surv_res$plot +
     "text",
     x = 140, y = 0.95,
     vjust = 1, hjust = 1,
-    label = "HR = 0.44\np = 0.022",
+    label = "HR = 0.439\np = 0.026",
     size = 5
   )
 dev.off()
@@ -461,7 +497,7 @@ for (col in rank_cols) {
                         node[[col]])
 }
 
-node_highlight <- node[node$ID %in% c("2099", "1351"), ] %>%
+node_highlight <- node[node$ID %in% c("1351"), ] %>%
   mutate(standard_name = paste0(gsub("g__", "", Rank6) %>% 
                                   substr(., 1, 1) %>% 
                                   toupper(.), ".", 
@@ -475,7 +511,7 @@ ggplot() +
   scale_linewidth_continuous(range = c(0.01, 0.05)) +
   geom_point(data = node, pch = 21, color = "gray40",
              aes(X1, X2, fill = Rank2, size = igraph.degree)) +
-  scale_fill_manual(values = rev(paletteer_d("ggsci::lanonc_lancet"))) +
+  scale_fill_manual(values = paletteer_d("ggsci::nrc_npg")) +
   facet_wrap(.~ label, scales = "free_y", nrow = 1) +
   geom_text(data = node_highlight, aes(X1, X2, label = standard_name)) +
   scale_size(range = c(0.8, 5)) +
@@ -496,11 +532,6 @@ plots <- tab[[1]]
 pdf(file.path(DIR_RES, "C_net_connectivity_tn.pdf"), width = 6, height = 5)
 plots[[2]]
 dev.off()
-
-if("2099" %in% rownames(tax_table)) {
-  taxonomy_2099 <- tax_table["2099", ]
-  print(taxonomy_2099)
-}
 
 pdf(file.path(DIR_RES, "C_net_randomness_tn.pdf"), width = 6, height =5)
 plots[[3]] +
@@ -537,8 +568,8 @@ module[[1]]
 dev.off()
 
 module_otu <- module[[2]]
-module_otu$taxa_g <- tax_table[module_otu$ID, "Rank6"]
-module_otu$taxa_s <- tax_table[module_otu$ID, "Rank7"]
+module_otu$taxa_g <- ps.obj@tax_table[module_otu$ID, "Rank6"]
+module_otu$taxa_s <- ps.obj@tax_table[module_otu$ID, "Rank7"]
 module_otu <- module_otu %>%
   filter(taxa_g != "g__",
          taxa_s != "s__") %>%
@@ -574,19 +605,54 @@ module_species <- module_otu %>%
 
 # The biggest normal module that does not resemble any tumour module
 saving_module <- data.frame(
-  Species = strsplit(module_species$species[1], "\\|")[[1]],
-  OTU = strsplit(module_species$otu[1], "\\|")[[1]]
+  Species = strsplit(module_species$species[module_species$group == "Normalmodel_1"], "\\|")[[1]],
+  OTU = strsplit(module_species$otu[module_species$group == "Normalmodel_1"], "\\|")[[1]]
 ) %>%
   merge(., node, by.x = "OTU", by.y = "ID")
-abund_sp <- apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4
-saving_module$abundance <- abund_sp[saving_module$Species]
+abund_sp_t <- apply(mtx_cpm[ , grepl("C", colnames(mtx_cpm))], 
+                    MARGIN = 1, FUN = mean) / 1e+4
+abund_sp_n <- apply(mtx_cpm[ , grepl("N", colnames(mtx_cpm))], 
+                    MARGIN = 1, FUN = mean) / 1e+4
+saving_module$abundance_tumour <- abund_sp_t[saving_module$Species]
+saving_module$abundance_normal <- abund_sp_n[saving_module$Species]
 saving_module <- na.omit(saving_module)
 
+# Regression: Shannon index - candidate species
+x_raw <- as.matrix(log2(mtx_cpm[saving_info$species, names(shan_tumour)] + 1))
+x_clr <- apply(x_raw, 2, function(v) clr(v)) %>% t(.)
+
+# Elastic Net
+elnet_fit <- cv.glmnet(
+  x = x_clr,
+  y = shan_tumour,
+  alpha = 0.5,
+  family = "gaussian",
+  standardize = TRUE
+)
+
+coef_elnet <- coef(elnet_fit, s = "lambda.min") %>%
+  as.matrix(.) %>%
+  as.data.frame(.) %>%
+  mutate(species = rownames(.)) %>%
+  filter(species != "(Intercept)" & lambda.min > 0) %>%
+  mutate(rank_contribute = rank(-lambda.min, ties.method = "min"))
+
+# Rank all parameters
 saving_normal <- saving_module %>%
-  filter(Group == "Normal") %>%
+  filter(Group == "Normal" & Species %in% coef_elnet$species) %>%
   mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
          rank_closseness = rank(-igraph.closeness, ties.method = "min"),
-         rank_betweenness = rank(igraph.betweenness, ties.method = "min"),
-         rank_abundance = rank(-abundance, ties.method = "min")) %>%
-  mutate(rank = rank_degree + rank_closseness + 
-           rank_betweenness + rank_abundance)
+         rank_betweenness = rank(igraph.betweenness, ties.method = "min")) %>%
+  mutate(rank_normal = (rank_degree + rank_closseness + rank_betweenness)/3)
+
+saving_tumour <- saving_module %>%
+  filter(Group == "Tumour"& Species %in% coef_elnet$species) %>%
+  mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
+         rank_closseness = rank(-igraph.closeness, ties.method = "min"),
+         rank_betweenness = rank(igraph.betweenness, ties.method = "min")) %>%
+  mutate(rank_tumour = c(rank_degree + rank_closseness + rank_betweenness)/3)
+
+saving_info <- merge(saving_tumour, coef_elnet[ , c("species", "rank_contribute")],
+                     by.x = "Species", by.y = "species")
+saving_info <- saving_info %>%
+  mutate(rank = rank_tumour + rank_contribute)
