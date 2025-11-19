@@ -18,6 +18,7 @@ library(survminer)
 library(paletteer)
 library(circlize)
 library(ComplexHeatmap)
+library(gridExtra)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
@@ -609,12 +610,8 @@ saving_module <- data.frame(
   OTU = strsplit(module_species$otu[module_species$group == "Normalmodel_1"], "\\|")[[1]]
 ) %>%
   merge(., node, by.x = "OTU", by.y = "ID")
-abund_sp_t <- apply(mtx_cpm[ , grepl("C", colnames(mtx_cpm))], 
-                    MARGIN = 1, FUN = mean) / 1e+4
-abund_sp_n <- apply(mtx_cpm[ , grepl("N", colnames(mtx_cpm))], 
-                    MARGIN = 1, FUN = mean) / 1e+4
-saving_module$abundance_tumour <- abund_sp_t[saving_module$Species]
-saving_module$abundance_normal <- abund_sp_n[saving_module$Species]
+abund_sp <- apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4
+saving_module$abundance <- abund_sp[saving_module$Species]
 saving_module <- na.omit(saving_module)
 
 # Regression: Shannon index - candidate species
@@ -634,25 +631,73 @@ coef_elnet <- coef(elnet_fit, s = "lambda.min") %>%
   as.matrix(.) %>%
   as.data.frame(.) %>%
   mutate(species = rownames(.)) %>%
-  filter(species != "(Intercept)" & lambda.min > 0) %>%
-  mutate(rank_contribute = rank(-lambda.min, ties.method = "min"))
+  filter(species != "(Intercept)") %>%
+  mutate(rank_contribute = rank(-lambda.min)) %>%
+  filter(lambda.min > 1)
 
 # Rank all parameters
+# & Species %in% coef_elnet$species
 saving_normal <- saving_module %>%
   filter(Group == "Normal" & Species %in% coef_elnet$species) %>%
   mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
-         rank_closseness = rank(-igraph.closeness, ties.method = "min"),
-         rank_betweenness = rank(igraph.betweenness, ties.method = "min")) %>%
-  mutate(rank_normal = (rank_degree + rank_closseness + rank_betweenness)/3)
+         rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
 saving_tumour <- saving_module %>%
   filter(Group == "Tumour"& Species %in% coef_elnet$species) %>%
   mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
-         rank_closseness = rank(-igraph.closeness, ties.method = "min"),
-         rank_betweenness = rank(igraph.betweenness, ties.method = "min")) %>%
-  mutate(rank_tumour = c(rank_degree + rank_closseness + rank_betweenness)/3)
+         rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
-saving_info <- merge(saving_tumour, coef_elnet[ , c("species", "rank_contribute")],
-                     by.x = "Species", by.y = "species")
+saving_info <- merge(
+  saving_normal[, c("OTU", "Species", "abundance",
+                    "rank_degree", "rank_closseness")],
+  saving_tumour[, c("OTU", "Species", 
+                    "rank_degree", "rank_closseness")],
+  by = c("OTU", "Species"),
+  suffixes = c(".normal", ".tumour")
+) %>%
+  mutate(stability_degree = rank(abs(rank_degree.normal - rank_degree.tumour)),
+         rank_degree = (rank(rank_degree.normal) + rank(rank_degree.tumour))/2,
+         stability_closeness = rank(abs(rank_closseness.normal - rank_closseness.tumour)),
+         rank_satbility = (rank(rank_closseness.normal) + rank(rank_closseness.tumour))/2)
+
 saving_info <- saving_info %>%
-  mutate(rank = rank_tumour + rank_contribute)
+  filter(Species %in% coef_elnet$species) %>%
+  mutate(diversity_contribute = coef_elnet[Species, "rank_contribute"],
+         rank_abundance = rank(-abundance)) %>%
+  mutate(rank_score = sqrt(stability_degree * rank_degree) + 
+           sqrt(stability_closeness * rank_satbility) + 
+           diversity_contribute + rank_abundance,
+         rank_total = rank(rank_score)) %>%
+  arrange(rank_total)
+
+rank_mtx <- saving_info[ , c("Species", "rank_abundance",
+                             "stability_degree", "rank_degree",
+                             "stability_closeness", "rank_satbility",
+                             "diversity_contribute", "rank_total")] 
+rownames(rank_mtx) <- saving_info$Species
+
+long_ranks <- reshape2::melt(saving_info[ , c("Species", "rank_abundance",
+                                             "stability_degree", "rank_degree",
+                                             "stability_closeness", "rank_satbility",
+                                             "diversity_contribute")])
+long_total <- reshape2::melt(saving_info[ , c("Species", "rank_total")])
+
+pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 4, height = 4)
+ggplot(data = long_rank, aes(x = variable, y = Species,col = value)) +
+  geom_point(size = 2) +
+  scale_color_distiller(palette = "RdBu", direction = 1) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+dev.off()
+pdf(file.path(DIR_RES, "D_core_sp_selection_p2.pdf"), width = 5, height = 3)
+ggplot(data = long_total, aes(y = rank(1/value), x = Species,
+                              fill = value)) +
+  geom_bar(stat = "identity") +
+  scale_fill_distiller(palette = "RdBu", direction = 1) +
+  coord_flip() +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+dev.off()
