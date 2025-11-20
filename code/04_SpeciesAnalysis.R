@@ -701,3 +701,32 @@ ggplot(data = long_total, aes(y = rank(1/value), x = Species,
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1))
 dev.off()
+
+# Correlation between EF and shannon index
+abund_ef <- mtx_cpm["Enterococcus_faecalis", names(shan_tumour)] / 1e+4
+all(colnames(abund_ef) == names(shan_tumour))
+
+cor_ef_shan <- psych::corr.test(t(abund_ef), shan_tumour)
+
+df_ef_shan <- data.frame(
+  row.names = names(shan_tumour),
+  t(abund_ef),
+  shannon = shan_tumour
+)
+
+pdf(file.path(DIR_RES, "E_cor_ef_shannon.pdf"), width = 3.3, height = 3.3)
+ggplot(df_ef_shan, aes(x = Enterococcus_faecalis, y = shannon)) +
+  geom_point(color = "tomato2", size = 1.5) +
+  geom_smooth(method = lm, color = "#00A087",
+              linewidth = 1.5, fill = "#4DBBD5") +
+  annotate("text", x = 1.7, y = 2.8, color = 1,
+           label = paste0("R = ", round(cor_ef_shan$r, 3),
+                          "\np = ", format.pval(cor_ef_shan$p.adj, 3))) +
+  xlab("E.faecalis abundance (%)") +
+  ylab("Shannon index") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+dev.off()
