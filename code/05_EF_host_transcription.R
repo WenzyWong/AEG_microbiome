@@ -8,6 +8,7 @@
 #######################################################
 library(dplyr)
 library(rtracklayer) # import gtf
+library(ggplot2)
 library(DESeq2)
 library(enrichplot)
 library(paletteer)
@@ -42,10 +43,23 @@ abund_ef <- data.frame(
   sample = colnames(mtx_hcount),
   t(mtx_cpm["Enterococcus_faecalis", colnames(mtx_hcount)] / 1e+4)
 )
+pdf(file.path(DIR_RES, "D_qqnorm_distribution_ef.pdf"), width = 5, height = 3)
 qqnorm(abund_ef$Enterococcus_faecalis)
-shapiro.test(abund_ef$Enterococcus_faecalis)
-hist(abund_ef$Enterococcus_faecalis) # Normal distribution
+qqline(abund_ef$Enterococcus_faecalis)
+dev.off()
 
+shapiro.test(abund_ef$Enterococcus_faecalis)
+
+pdf(file.path(DIR_RES, "D_hist_distribution_ef.pdf"), width = 5, height = 3)
+hist(abund_ef$Enterococcus_faecalis, main  = "Histogram of EF abundance",
+     breaks = seq(min(abund_ef$Enterococcus_faecalis),
+                  max(abund_ef$Enterococcus_faecalis), 
+                  length.out = 10),
+     col = NULL, xlab = "EF abundance (%)", freq = F)
+curve(dnorm(x, mean = mean(abund_ef$Enterococcus_faecalis), 
+            sd = sqrt(var(abund_ef$Enterococcus_faecalis))), 
+      col="blue", lwd=2, add=TRUE, yaxt="n") # Normal distribution
+dev.off()
 summary(abund_ef$Enterococcus_faecalis)
 
 # Differential analysis
