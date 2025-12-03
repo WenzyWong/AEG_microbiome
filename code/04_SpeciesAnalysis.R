@@ -230,7 +230,7 @@ for (i in 1:length(gAbund)) {
                       x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
                       y = abundSpTop$log2CPM[abundSpTop$Genus == sectors[i]][j] * 
                         (12 / max(abundSpTop$log2CPM)),
-                      col = colSp[i],
+                      #col = colSp[i],
                       type = "h",
                       baseline = 0)
     # The annotation circle representing survival risks of species
