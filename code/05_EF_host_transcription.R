@@ -108,6 +108,8 @@ draw_de <- de_df %>%
 
 source(file.path(DIR_TOOL, "sort_gene.R"))
 source(file.path(DIR_TOOL, "gsea_enrich.R"))
+
+# Hallmark
 gsea_hallmark <- gsea_enrich("h.all", sort_gene(de_df), "Hs")
 saveRDS(gsea_hallmark, file.path(DIR_RDS, "gsea_hallmark_ef_diff.rds"))
 gsea_hallmark@result$ID[gsea_hallmark@result$NES < 0]
@@ -127,18 +129,38 @@ pdf(file.path(DIR_RES, "E_gsea_ridge.pdf"), width = 12, height = 7)
 ridgeplot(gsea_hallmark)
 dev.off()
 
+# KEGG
+gsea_kegg <- gsea_enrich("c2.cp.kegg", sort_gene(de_df), "Hs")
+saveRDS(gsea_kegg, file.path(DIR_RDS, "gsea_kegg_ef_diff.rds"))
+gsea_kegg@result$ID[gsea_kegg@result$NES < 0]
+gsea_kegg@result$ID[gsea_kegg@result$NES > 0]
+
+draw_kegg <- c("KEGG_DRUG_METABOLISM_OTHER_ENZYMES",
+               "KEGG_RETINOL_METABOLISM")
+tolower(draw_kegg)
+pdf(file.path(DIR_RES, "E_gsea_curve_kegg.pdf"), width = 4, height = 3)
+gseaplot2(gsea_kegg, draw_kegg, pvalue_table = T,
+          color = paletteer_d("ggsci::default_jama")[c(4, 7)])
+dev.off()
+
+pdf(file.path(DIR_RES, "E_gsea_ridge_kegg.pdf"), width = 12, height = 7)
+ridgeplot(gsea_kegg)
+dev.off()
+
 # Matching genes in enriched terms
-name_highlight <- strsplit(gsea_hallmark@result$core_enrichment
-                           [gsea_hallmark@result$ID == "HALLMARK_TNFA_SIGNALING_VIA_NFKB" |
-                               gsea_hallmark@result$ID == "HALLMARK_IL6_JAK_STAT3_SIGNALING"|
-                               gsea_hallmark@result$ID == "HALLMARK_IL2_STAT5_SIGNALING"],
-                         "/") %>% unlist(.)
+name_highlight <- c(strsplit(gsea_hallmark@result$core_enrichment
+                           [gsea_hallmark@result$ID %in% draw_hallmark],
+                         "/") %>% unlist(.),
+                    strsplit(gsea_kegg@result$core_enrichment
+                             [gsea_kegg@result$ID %in% draw_kegg],
+                             "/") %>% unlist(.))
 de_highlight <- de_df %>%
   filter(symbol %in% name_highlight & change != "NS") %>%
-  arrange(p.adj)
+  arrange(desc(abs(log2FC)))
 
+pdf(file.path(DIR_RES, "F_deg_volc_pathway_highlighted.pdf"), width = 3.5, height = 3.2)
 ggplot(draw_de, aes(x = log2FC, y = -log10(p.adj), colour = change)) + 
-  ggtitle("Tumour v.s. Normal") + 
+  ggtitle("EF-high vs EF-low") + 
   geom_point(size = 1, alpha = .8) + 
   xlim(-5, 5) +
   scale_color_manual(values = c("#126CAA", "grey", "#9A342C")) +
@@ -158,3 +180,5 @@ ggplot(draw_de, aes(x = log2FC, y = -log10(p.adj), colour = change)) +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1))
+dev.off()
+
