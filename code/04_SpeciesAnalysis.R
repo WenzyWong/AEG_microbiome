@@ -19,6 +19,7 @@ library(paletteer)
 library(circlize)
 library(ComplexHeatmap)
 library(gridExtra)
+library(tools)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
