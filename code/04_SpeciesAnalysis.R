@@ -616,7 +616,13 @@ saving_module$abundance <- abund_sp[saving_module$Species]
 saving_module <- na.omit(saving_module)
 
 # Regression: Shannon index - candidate species
-x_raw <- as.matrix(log2(mtx_cpm[saving_info$species, names(shan_tumour)] + 1))
+elnet_sp <- unique(saving_module$Species)
+tumour_module_sp <- strsplit(module_species$species[module_species$group %in% 
+                                                      paste0("Tumourmodel_", 1:5)], "\\|") %>%
+  unlist(.) %>%
+  unique(.)
+elnet_sp <- elnet_sp[elnet_sp %in% tumour_module_sp]
+x_raw <- as.matrix(log2(mtx_cpm[elnet_sp, names(shan_tumour)] + 1))
 x_clr <- apply(x_raw, 2, function(v) clr(v)) %>% t(.)
 
 # Elastic Net
@@ -681,22 +687,27 @@ long_ranks <- reshape2::melt(saving_info[ , c("Species", "rank_abundance",
                                              "stability_degree", "rank_degree",
                                              "stability_closeness", "rank_satbility",
                                              "diversity_contribute")])
-long_total <- reshape2::melt(saving_info[ , c("Species", "rank_total")])
+long_total <- reshape2::melt(saving_info[ , c("Species", "rank_total")]) %>%
+  arrange(desc(value)) %>%
+  mutate(Species = factor(Species, level = Species))
 
+long_ranks$Species <- factor(long_ranks$Species, level = long_total$Species)
+colnames(long_ranks)[3] <- "Rank"
 pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 4, height = 4)
-ggplot(data = long_rank, aes(x = variable, y = Species,col = value)) +
+ggplot(data = long_ranks, aes(x = variable, y = Species,col = Rank)) +
   geom_point(size = 2) +
-  scale_color_distiller(palette = "RdBu", direction = 1) +
+  scale_color_distiller(palette = "Reds") +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1),
         axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
 dev.off()
+colnames(long_total)[3] <- "Rank"
 pdf(file.path(DIR_RES, "D_core_sp_selection_p2.pdf"), width = 5, height = 3)
-ggplot(data = long_total, aes(y = rank(1/value), x = Species,
-                              fill = value)) +
+ggplot(data = long_total, aes(y = rank(1/Rank), x = Species,
+                              fill = Rank)) +
   geom_bar(stat = "identity") +
-  scale_fill_distiller(palette = "RdBu", direction = 1) +
+  scale_fill_distiller(palette = "Reds") +
   coord_flip() +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
