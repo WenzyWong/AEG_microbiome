@@ -303,7 +303,7 @@ dev.off()
 ##########################
 # AEG overall distribution
 abund_aeg_distribution <- cpm_aeg / 1e4
-abund_aeg_distribution <- abund_aeg_distribution[names(abund_aeg)[abund_aeg > 1], ]
+abund_aeg_distribution <- abund_aeg_distribution[names(abund_aeg)[abund_aeg > 0.8], ]
 
 abund_aeg_distribution <- rbind(abund_aeg_distribution, 
                                 Others = 100 - apply(abund_aeg_distribution, MARGIN = 2, FUN = sum)) 
@@ -311,17 +311,19 @@ abund_aeg_distribution <- abund_aeg_distribution[, order(unlist(abund_aeg_distri
                                                          decreasing = T)]
 abund_aeg_distribution$Genus <- rownames(abund_aeg_distribution)
 
-colAbund <- c("#64A4CC", "#9CCEE3", "#ADE0DC", "#CAEAD2", "#D3F2D6", 
-              "#ECF6C8", "#FEEDAA", "#FDC980", "#F89D59", "#E75B3A", 
-              "#CD2626", "#9A342C", "#DCDCDC")
+colAbund <- c("grey",
+              paletteer_d("khroma::smoothrainbow")[seq(from = 2, 
+                                                       to = 33, 
+                                                       by = 2)]) %>%
+  rev(.)
 
 long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
 
-pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_1.pdf"),
-    width = 6, height = 4)
+pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_point8.pdf"),
+    width = 6, height = 4.75)
 ggplot(data = long_distribution, aes(x = variable, y = value, 
                                      alluvium = factor(Genus, levels = unique(Genus)))) +
-  geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus))), alpha = 1) +
+  geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus)))) +
   scale_fill_manual(values = colAbund,
                     name = "Genus") +
   xlab("Samples") +
