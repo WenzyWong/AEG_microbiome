@@ -50,7 +50,7 @@ clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 # Circle plot of genus-species
 # Allocate positions for species
 gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
-gAbund <- gAbund[gAbund > 1]
+gAbund <- gAbund[gAbund > 0.8]
 indexSp <- c() # The species index in the cpm matrix, assigned to each genus
 for (g in names(gAbund)) {
   pairSp <- grep(paste("*", g, "*", sep = ""), rownames(mtx_cpm))
@@ -127,38 +127,12 @@ abundSpTop$Diff.Trend <- diffSp$Change
 abundSpTop$Diff.Padj <- diffSp$P.adj
 abundSpTop$Diff.Log2FC <- diffSp$log2FC
 
-saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop.rds"))
+saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Point8.rds"))
 
-# Preparing for circlize drawing
-colGenera <- c("#8AB9C480",
-               "#4E3C7C80",
-               "#9D80BC80",
-               "#895B4980",
-               "#9A342C80",
-               "#EA969680",
-               "#EF7D2F80",
-               "#F8CD5A80",
-               "#5C844780",
-               "#A6D38480",
-               "#126CAA80",
-               "#6D9DE280",
-               "#2A7E8C80"
-) # Colours for genera. "80" reprensents alpha
-
-colSp <- c("#8AB9C4",
-           "#4E3C7C",
-           "#9D80BC",
-           "#895B49",
-           "#9A342C",
-           "#EA9696",
-           "#EF7D2F",
-           "#F8CD5A",
-           "#5C8447",
-           "#A6D384",
-           "#126CAA",
-           "#6D9DE2",
-           "#2A7E8C"
-)# Colours for species
+colGenera <- paste0(substr(paletteer_d("khroma::smoothrainbow")[seq(from = 2, to = 33, by = 2)], 1, 7), "80") %>%
+  rev(.) # Colours for genera. "80" reprensents alpha
+colSp <- substr(paletteer_d("khroma::smoothrainbow")[seq(from = 2, to = 33, by = 2)], 1, 7) %>%
+  rev(.)
 
 # Assigning the scaled colours for survival HR risks
 # Calculating the assignment portion within colour gradiant
@@ -231,7 +205,7 @@ for (i in 1:length(gAbund)) {
                       x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
                       y = abundSpTop$log2CPM[abundSpTop$Genus == sectors[i]][j] * 
                         (12 / max(abundSpTop$log2CPM)),
-                      #col = colSp[i],
+                      col = colSp[i],
                       type = "h",
                       baseline = 0)
     # The annotation circle representing survival risks of species
@@ -693,7 +667,7 @@ long_total <- reshape2::melt(saving_info[ , c("Species", "rank_total")]) %>%
 
 long_ranks$Species <- factor(long_ranks$Species, level = long_total$Species)
 colnames(long_ranks)[3] <- "Rank"
-pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 4, height = 4)
+pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 4, height = 3)
 ggplot(data = long_ranks, aes(x = variable, y = Species,col = Rank)) +
   geom_point(size = 2) +
   scale_color_distiller(palette = "Reds") +
