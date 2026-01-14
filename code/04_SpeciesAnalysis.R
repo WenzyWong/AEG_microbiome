@@ -523,6 +523,8 @@ dev.off()
 # Network destruction resistance
 resis <- natural.con.microp(ps = ps.obj, corg = cortab,
                             norm = TRUE, end = 150, start = 0)
+saveRDS(resis, file.path(DIR_RDS, "network_destruction_resistance.rds"))
+
 pdf(file.path(DIR_RES, "C_net_resistance.pdf"), width = 5, height = 4)
 resis[[1]] +
   scale_colour_manual(values = c(Normal = "#126CAA", 
@@ -533,6 +535,27 @@ resis[[1]] +
         axis.text = element_text(colour = 1))
 dev.off()
 write.csv(resis[[2]], file.path(DIR_TAB, "./Res2_network_resistance.csv"))
+
+# Relative change
+resis_data <- resis[[2]] %>%
+  group_by(Group) %>%
+  mutate(baseline = Natural.connectivity[1],
+         changed_connectivity = Natural.connectivity / baseline) %>%
+  ungroup()
+
+pdf(file.path(DIR_RES, "C_net_resistance_changed.pdf"), width = 5, height = 4)
+ggplot(resis_data, aes(x = `Num.of.remove.nodes`, 
+                       y = changed_connectivity, colour = Group)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 1) +
+  scale_colour_manual(values = c(Normal = "#126CAA", 
+                                 Tumour = "#9A342C")) +
+  labs(x = "Number of removed nodes",
+       y = "Connectivity - relative change") +
+  theme_minimal() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+dev.off()
 
 ####################
 # Network similarity
