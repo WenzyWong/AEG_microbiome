@@ -27,6 +27,7 @@ library(network)
 library(sna)
 library(tidyverse)
 library(tidyfst)
+library(pulsar)
 library(ggClusterNet) # other requirements: ggraph, tidyfst
 # Regression
 library(compositions)
