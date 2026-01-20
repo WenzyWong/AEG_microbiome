@@ -16,6 +16,7 @@ library(ape) # pcoa
 library(paletteer)
 library(ComplexHeatmap)
 library(RColorBrewer)
+library(dplyr)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -303,7 +304,9 @@ dev.off()
 ##########################
 # AEG overall distribution
 abund_aeg_distribution <- cpm_aeg / 1e4
-abund_aeg_distribution <- abund_aeg_distribution[names(abund_aeg)[abund_aeg > 0.8], ]
+abund_aeg_distribution <- abund_aeg_distribution[order(rowMeans(abund_aeg_distribution), 
+                                                       decreasing = TRUE), ]
+abund_aeg_distribution <- abund_aeg_distribution[1:20, ]
 
 abund_aeg_distribution <- rbind(abund_aeg_distribution, 
                                 Others = 100 - apply(abund_aeg_distribution, MARGIN = 2, FUN = sum)) 
@@ -311,11 +314,9 @@ abund_aeg_distribution <- abund_aeg_distribution[, order(unlist(abund_aeg_distri
                                                          decreasing = T)]
 abund_aeg_distribution$Genus <- rownames(abund_aeg_distribution)
 
-colAbund <- c("grey",
-              paletteer_d("khroma::smoothrainbow")[seq(from = 2, 
-                                                       to = 33, 
-                                                       by = 2)]) %>%
-  rev(.)
+colAbund <- c(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
+                                                       23:27, 2, 4, 5, 7, 9)],
+              "grey")
 
 long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
 
@@ -323,7 +324,8 @@ pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_point8.pdf"),
     width = 6, height = 4.75)
 ggplot(data = long_distribution, aes(x = variable, y = value, 
                                      alluvium = factor(Genus, levels = unique(Genus)))) +
-  geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus)))) +
+  geom_alluvium(aes(fill = factor(Genus, levels = unique(Genus))),
+                alpha = 1) +
   scale_fill_manual(values = colAbund,
                     name = "Genus") +
   xlab("Samples") +
