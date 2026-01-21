@@ -51,20 +51,22 @@ clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 # Circle plot of genus-species
 # Allocate positions for species
 gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
-gAbund <- gAbund[gAbund > 0.8]
+gAbund <- gAbund[1:20]
 indexSp <- c() # The species index in the cpm matrix, assigned to each genus
 for (g in names(gAbund)) {
   pairSp <- grep(paste("*", g, "*", sep = ""), rownames(mtx_cpm))
   indexSp <- c(indexSp, pairSp)
 }
 
-abundSpTop <- log2(apply(mtx_cpm[indexSp, ], MARGIN = 1, FUN = mean) + 1)
+abundSpTop <- apply(mtx_cpm[indexSp, ] / 1e+4, MARGIN = 1, FUN = mean)
 abundSpTop <- data.frame(
   Species = gsub("[[:punct:]]", "_", names(abundSpTop)), # Adjusting the species names to successfully establish formulas
-  log2CPM = log2(apply(mtx_cpm[indexSp, ], MARGIN = 1, FUN = mean) + 1)
+  Abundance = apply(mtx_cpm[indexSp, ] / 1e+4, MARGIN = 1, FUN = mean)
 ) # Species within top30 genera, no matter how abundant they really are
 # Notice: the rownames of abundSpTop is different from abundSpTop$Species.
 # Using species name in the latter steps, you must pay attention to the choice.
+
+abundSpTop <- abundSpTop[abundSpTop$Abundance > 0.01, ]
 
 # drawHR1 contains the clinical information of the samples
 drawHR1 <- data.frame(
@@ -128,12 +130,14 @@ abundSpTop$Diff.Trend <- diffSp$Change
 abundSpTop$Diff.Padj <- diffSp$P.adj
 abundSpTop$Diff.Log2FC <- diffSp$log2FC
 
-saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Point8.rds"))
+saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
 
-colGenera <- paste0(substr(paletteer_d("khroma::smoothrainbow")[seq(from = 2, to = 33, by = 2)], 1, 7), "80") %>%
-  rev(.) # Colours for genera. "80" reprensents alpha
-colSp <- substr(paletteer_d("khroma::smoothrainbow")[seq(from = 2, to = 33, by = 2)], 1, 7) %>%
-  rev(.)
+colGenera <- paste0(substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
+                                                                    23:27, 2, 4, 5, 7, 9)], 
+                           1, 7), "80") # Colours for genera. "80" reprensents alpha
+colSp <- substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
+                                                         23:27, 2, 4, 5, 7, 9)], 
+                1, 7)
 
 # Assigning the scaled colours for survival HR risks
 # Calculating the assignment portion within colour gradiant
@@ -186,7 +190,7 @@ colourLog2FC <- colourLog2FC[abundSpTop$Species]
 
 # Drawing the most abundant genera section
 # Allocating the canvas and sectors
-pdf(file.path(DIR_RES, "A_circlised_genus_species.pdf"), width = 8, height = 8)
+pdf(file.path(DIR_RES, "A_circlised_genus_species_filtered.pdf"), width = 8, height = 8)
 par(mar = c(1, 1, 1, 1) * 11, cex = 0.6, xpd = NA)
 sectors <- factor(names(gAbund), levels = names(gAbund))
 circos.par(points.overflow.warning = FALSE,
@@ -199,55 +203,66 @@ circos.trackPlotRegion(factors = sectors, ylim = c(0, 12),
 # Drawing the species through loops
 cnt <- 0
 for (i in 1:length(gAbund)) {
+  # Get species indices for current genus and sort by abundance
+  sp_indices <- which(abundSpTop$Genus == sectors[i])
+  sp_order <- sp_indices[order(abundSpTop$Abundance[sp_indices], decreasing = TRUE)]
+  
+  # Calculate uniform width for each species within this genus
+  bar_width <- 1 / lenEachG[i] / 2  # Half width of each position
+  
   for (j in 1:lenEachG[i]) {
     cnt <- cnt + 1
-    # The length of each species-line represents its relative log2CPM
-    circos.trackLines(sectors = sectors[i],
-                      x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
-                      y = abundSpTop$log2CPM[abundSpTop$Genus == sectors[i]][j] * 
-                        (12 / max(abundSpTop$log2CPM)),
-                      col = colSp[i],
-                      type = "h",
-                      baseline = 0)
+    sp_idx <- sp_order[j]
+    
+    # Calculate the center position for this species
+    x_center <- (j - 0.5) / lenEachG[i]
+    
+    # The length of each species-bar represents its relative abundance (log-transformed for better visualization)
+    circos.rect(xleft = x_center - bar_width * 0.8,
+                ybottom = 0,
+                xright = x_center + bar_width * 0.8,
+                ytop = log10(abundSpTop$Abundance[sp_idx] + 1) * 
+                  (12 / log10(max(abundSpTop$Abundance) + 1)),
+                sector.index = sectors[i],
+                col = colSp[i],
+                border = NA)
     # The annotation circle representing survival risks of species
     circos.trackLines(sectors = sectors[i],
-                      x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
+                      x = x_center,
                       y = -1,
-                      col = colourHR[cnt],
+                      col = colourHR[sp_idx],
                       type = "h",
                       baseline = -2)
     # The annotation sub-circle representing survival significance (Surv.P)
-    # Remember to adjust the black points to the top of the whole picture, avoiding being shielded by white ones
     circos.trackLines(sectors = sectors[i],
-                      x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
+                      x = x_center,
                       y = if_else(
-                        abundSpTop$Surv.Risk[cnt] != "NS", -2.4, -2.3
+                        abundSpTop$Surv.Risk[sp_idx] != "NS", -2.4, -2.3
                       ),
                       col = if_else(
-                        abundSpTop$Surv.Risk[cnt] != "NS", "black", "white"
+                        abundSpTop$Surv.Risk[sp_idx] != "NS", "black", "white"
                       ),
                       type = "h",
                       baseline = -2.3)
     # The annotation circle representing differential log2foldchange between paired tumour & normal samples
     circos.trackLines(sectors = sectors[i],
-                      x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
+                      x = x_center,
                       y = -4,
-                      col = colourLog2FC[cnt],
+                      col = colourLog2FC[sp_idx],
                       type = "h",
                       baseline = -3)
     # The annotation sub-circle representing differential significance (Diff.Padj)
-    # Remember to adjust the black points to the top of the whole picture, avoiding being shielded by white ones
     circos.trackLines(sectors = sectors[i],
-                      x = abundSpTop$X[abundSpTop$Genus == sectors[i]][j],
+                      x = x_center,
                       y = if_else(
-                        abundSpTop$Diff.Trend[cnt] != "NS", -4.4, -4.3
+                        abundSpTop$Diff.Trend[sp_idx] != "NS", -4.4, -4.3
                       ),
                       col = if_else(
-                        abundSpTop$Diff.Trend[cnt] != "NS", "black", "white"
+                        abundSpTop$Diff.Trend[sp_idx] != "NS", "black", "white"
                       ),
                       type = "h",
                       baseline = -4.3)
-
+    
   }
   # The names of sectors (genera)
   circos.trackText(sectors = sectors[i],
@@ -257,7 +272,7 @@ for (i in 1:length(gAbund)) {
                    col = "black")
 }
 
-# Adding the exact scale of relative log2CPM
+# Adding the exact scale of relative abundance
 circos.yaxis(sector.index = sectors[11], side = "left", col = "grey30",
              tick.length = convert_x(.4, "mm", sectors[10]))
 
