@@ -558,10 +558,11 @@ resis_data <- resis[[2]] %>%
          changed_connectivity = Natural.connectivity / baseline) %>%
   ungroup()
 
-pdf(file.path(DIR_RES, "C_net_resistance_changed.pdf"), width = 5, height = 4)
+pdf(file.path(DIR_RES, "C_net_resistance_changed_0to100.pdf"), width = 5, height = 4)
 ggplot(resis_data, aes(x = `Num.of.remove.nodes`, 
                        y = changed_connectivity, colour = Group)) +
   geom_point(alpha = 0.3) +
+  xlim(0, 100) +
   geom_smooth(method = "loess", se = FALSE, linewidth = 1) +
   scale_colour_manual(values = c(Normal = "#126CAA", 
                                  Tumour = "#9A342C")) +
