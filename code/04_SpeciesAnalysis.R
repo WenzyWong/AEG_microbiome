@@ -20,6 +20,7 @@ library(circlize)
 library(ComplexHeatmap)
 library(gridExtra)
 library(tools)
+library(stringr)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
@@ -600,6 +601,106 @@ module_otu <- module_otu %>%
 
 head(module_otu)
 table(module_otu$group)
+
+# Re-visualise the module relationships
+nodes <- module_otu %>%
+  select(ID, standard_name) %>%
+  distinct(ID, .keep_all = TRUE)
+species_modules <- module_otu %>%
+  select(ID, group) %>%
+  distinct()
+
+edges <- bind_rows(
+  # Within-module connections
+  species_modules %>%
+    inner_join(species_modules, by = "group", relationship = "many-to-many") %>%
+    filter(ID.x < ID.y) %>%
+    select(from = ID.x, to = ID.y),
+  
+  # Cross-module connections (shared species)
+  species_modules %>%
+    inner_join(species_modules, by = "ID", relationship = "many-to-many") %>%
+    filter(group.x != group.y, group.x < group.y) %>%
+    select(from = ID, to = ID) %>%
+    distinct()
+) %>%
+  distinct() %>%
+  mutate(weight = 1)
+
+nodes <- nodes %>%
+  left_join(
+    species_modules %>%
+      group_by(ID) %>%
+      summarise(
+        # primary group: if normal exist, keep normal model number
+        primary_group = {
+          normal_groups <- group[grepl("Normal", group)]
+          if (length(normal_groups) > 0) {
+            paste(normal_groups, collapse = "; ")
+          } else {
+            paste(group, collapse = "; ")
+          }
+        },
+        # secondary group: if tumour exist, keep tumour model number
+        secondary_group = {
+          tumour_groups <- group[grepl("Tumour", group)]
+          if (length(tumour_groups) > 0) {
+            paste(tumour_groups, collapse = "; ")
+          } else {
+            paste(group, collapse = "; ")
+          }
+        },
+        group = paste(group, collapse = "; "),
+        n_modules = n(),
+        has_normal = any(grepl("Normal", group)),
+        has_tumour = any(grepl("Tumour", group))
+      ),
+    by = "ID"
+  )
+
+g <- graph_from_data_frame(edges, directed = FALSE, vertices = nodes)
+
+set.seed(42)
+layout <- create_layout(g, layout = 'fr')
+
+# Colours
+blues_extended <- c(paletteer_d("RColorBrewer::Blues")[c(9)],
+                    rev(paletteer_d("ggsci::blue_material")))
+reds_extended <- rev(brewer.pal(9, "Reds")[2:6])
+
+colour_map <- c(
+  setNames(blues_extended, paste0("Normalmodel_", 1:11)),
+  setNames(reds_extended, paste0("Tumourmodel_", 1:5))
+)
+
+pdf(file.path(DIR_RES, "C_net_module_revisulised.pdf"), width = 5, height = 4)
+ggraph(layout) +
+  geom_edge_link(alpha = 0.5, colour = "grey", width = 0.3) +
+  # Main node color
+  geom_node_point(aes(colour = primary_group), size = 3.5) +
+  # Outer ring for shared nodes
+  geom_node_point(data = function(x) filter(x, has_normal & has_tumour),
+                  aes(x = x, y = y, fill = primary_group, colour = secondary_group), 
+                  shape = 21, size = 3.8) +
+  scale_colour_manual(values = colour_map) +
+  scale_fill_manual(values = colour_map) +
+  theme_void() +
+  theme(legend.position = "right",
+        legend.title = element_blank())
+dev.off()
+
+# For legend saving
+pdf(file.path(DIR_RES, "C_net_module_legend.pdf"), width = 5, height = 4)
+ggraph(layout) +
+  geom_edge_link(alpha = 0.5, colour = "grey", width = 0.3) +
+  # Main node color
+  geom_node_point(aes(colour = primary_group), size = 3.5) +
+  scale_colour_manual(values = colour_map) +
+  scale_fill_manual(values = colour_map) +
+  theme_void() +
+  theme(legend.position = "right",
+        legend.title = element_blank())
+dev.off()
 
 module_simi <- module[[3]]
 
