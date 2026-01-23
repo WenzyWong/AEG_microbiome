@@ -8,6 +8,7 @@
 library(ComplexHeatmap)
 library(psych)
 library(dplyr)
+library(ggplot2)
 library(RColorBrewer)
 
 setwd("/data/yzwang/project/AEG_seiri/")
@@ -17,8 +18,10 @@ DIR_SUP <- "/data/yzwang/project/AEG_seiri/results/S3/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
 DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
 
+###########
+# IDWAS
 # Load data
-idwas_idwas <- readxl::read_excel(file.path(DIR_TAB, "IDWAS_Supplemental_Table_S2.xlsx"), 
+idwas_drug <- readxl::read_excel(file.path(DIR_TAB, "IDWAS_Supplemental_Table_S2.xlsx"), 
                                  skip = 1) %>%
   select(Drug)
 
@@ -80,7 +83,9 @@ cor_ef_idwas_res <- data.frame(
 
 cor_ef_idwas_highlight <- cor_ef_idwas_res %>%
   arrange(rs)
-cor_ef_idwas_highlight <- cor_ef_idwas_highlight[c(1:3, (nrow(cor_ef_idwas_highlight) - 2):nrow(cor_ef_idwas_highlight)), ]
+cor_ef_idwas_highlight <- cor_ef_idwas_highlight[c(1:3, 
+                                                   (nrow(cor_ef_idwas_highlight) - 2):
+                                                     nrow(cor_ef_idwas_highlight)), ]
 
 pdf(file.path(DIR_FIG, "A_volc_EF_cor_idwas.pdf"), width = 4, height = 3.5)
 ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) + 
@@ -103,6 +108,56 @@ ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1))
 dev.off()
+
+#########
+# CARE
+library(rtracklayer) # For importing gtf file
+library(tidyverse)
+library(survival)
+library(pROC)
+
+anno_dt <- import("/data/yzwang/reference/gencode_ref/gencode_human_annotation.gtf") %>%
+  as.data.frame()
+coding_gene_list <- anno_dt$gene_name[anno_dt$gene_type == "protein_coding"] %>% unique(.)
+length(coding_gene_list)
+rm(anno_dt)
+
+hexp_tpm <- readRDS(paste0(DIR_RDS, "AEG_humanTPM_Symbol.rds"))
+hexp_tpm <- hexp_tpm[rownames(hexp_tpm) %in% coding_gene_list, ]
+hexp_tpm <- hexp_tpm[rowMeans(hexp_tpm) > 1, ]
+dim(hexp_tpm)
+
+care_score <- read.table(file.path(DIR_TAB, "CARE_GDSC"), header = T, fill = T) %>%
+  filter(Type == "t", )
+
+common_genes <- intersect(rownames(hexp_tpm), colnames(care_score))
+length(common_genes)
+
+hexp_tpm <- hexp_tpm[common_genes, ]
+care_score <- care_score[ , c(colnames(care_score)[1], common_genes)]
+rownames(care_score) <- care_score$Response
+
+meta_cols <- c("Response", "Type", "Target")
+gene_cols <- setdiff(colnames(care_score), meta_cols)
+
+
+care_score[, gene_cols] <- lapply(care_score[, gene_cols], function(x) {
+  as.numeric(as.character(x))
+})
+
+care_aggregated <- care_score %>%
+  group_by(Response) %>%
+  summarise(
+    Type = Type[1],
+    Target = paste(Target, collapse = "/"),
+    across(all_of(gene_cols), ~mean(.x, na.rm = TRUE)),
+    .groups = 'drop'
+  )
+
+care_mtx <- care_aggregated[ , common_genes]
+rownames(care_mtx) <- care_aggregated$Response
+
+cor_care <- cor(hexp_tpm, t(care_mtx))
 
 ######################
 # All abundant species
