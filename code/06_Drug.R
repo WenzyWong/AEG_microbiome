@@ -122,24 +122,27 @@ coding_gene_list <- anno_dt$gene_name[anno_dt$gene_type == "protein_coding"] %>%
 length(coding_gene_list)
 rm(anno_dt)
 
+# Preprocessing human expression matrix
 hexp_tpm <- readRDS(paste0(DIR_RDS, "AEG_humanTPM_Symbol.rds"))
 hexp_tpm <- hexp_tpm[rownames(hexp_tpm) %in% coding_gene_list, ]
 hexp_tpm <- hexp_tpm[rowMeans(hexp_tpm) > 1, ]
 dim(hexp_tpm)
 
+hexp_tpm <- hexp_tpm[common_genes, grep("C", colnames(hexp_tpm))]
+hexp_norm <- t(apply(hexp_tpm, 1, function(gene_values) {
+  (gene_values - mean(gene_values, na.rm = TRUE)) / sd(gene_values, na.rm = TRUE)
+}))
+gene_vars <- apply(hexp_norm, 1, var, na.rm = T)
+top_var_genes <- names(gene_vars)[gene_vars > median(gene_vars, na.rm = TRUE)]
+hexp_filt <- hexp_norm[top_var_genes, ]
+dim(hexp_filt)
+
+# Importing CARE scores
 care_score <- read.table(file.path(DIR_TAB, "CARE_GDSC"), header = T, fill = T) %>%
   filter(Type == "t", )
 
-common_genes <- intersect(rownames(hexp_tpm), colnames(care_score))
-length(common_genes)
-
-hexp_tpm <- hexp_tpm[common_genes, ]
-care_score <- care_score[ , c(colnames(care_score)[1], common_genes)]
-rownames(care_score) <- care_score$Response
-
 meta_cols <- c("Response", "Type", "Target")
 gene_cols <- setdiff(colnames(care_score), meta_cols)
-
 
 care_score[, gene_cols] <- lapply(care_score[, gene_cols], function(x) {
   as.numeric(as.character(x))
@@ -154,10 +157,15 @@ care_aggregated <- care_score %>%
     .groups = 'drop'
   )
 
+common_genes <- intersect(rownames(hexp_filt), colnames(care_score))
+length(common_genes)
+
 care_mtx <- care_aggregated[ , common_genes]
 rownames(care_mtx) <- care_aggregated$Response
 
-cor_care <- cor(hexp_tpm, t(care_mtx))
+cor_care <- cor(hexp_filt, t(care_mtx))
+
+Heatmap(cor_care)
 
 ######################
 # All abundant species
