@@ -113,7 +113,7 @@ phos_cont <- phos_tumour %>%
   filter(intensity > 3.891872) %>%
   mutate(log_intensity = log2(intensity))
 
-logistic_results <- phos_detect %>%
+logistic_res <- phos_detect %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
   nest() %>%
@@ -143,7 +143,9 @@ logistic_results <- phos_detect %>%
   ) %>%
   select(feature, estimate, OR, p.value, p_adj)
 
-cont_results <- phos_cont %>%
+write.csv(logistic_res, file.path(DIR_TAB, "Phos_logistic_sites.csv"))
+
+cont_res <- phos_cont %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
   summarise(
@@ -156,11 +158,19 @@ cont_results <- phos_cont %>%
   ) %>%
   mutate(p_adj = p.adjust(p_val, method = "BH"))
 
-group_ef <- abund_ef %>%
-  mutate(group = case_when(
-    Enterococcus_faecalis < summary(Enterococcus_faecalis)[2] ~ "Low",
-    Enterococcus_faecalis > summary(Enterococcus_faecalis)[5] ~ "High",
-    TRUE ~ "Mid"
-  ))
+write.csv(cont_res, file.path(DIR_TAB, "Phos_count_sites.csv"))
 
+merged_res <- logistic_res %>%
+  rename(logistic_est = estimate,
+         logistic_OR = OR,
+         logistic_p = p.value,
+         logistic_padj = p_adj) %>%
+  full_join(
+    cont_res %>%
+      rename(spearman_rho = rho,
+             cont_p = p_val,
+             cont_padj = p_adj),
+    by = "feature"
+  )
 
+write.csv(merged_res, file.path(DIR_TAB, "Phos_merged_res.csv"))
