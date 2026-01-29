@@ -10,6 +10,9 @@ library(stringr)
 library(tidyr)
 library(broom)
 library(purrr)
+library(ggplot2)
+
+set.seed(42)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -20,6 +23,7 @@ DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4/"
 # Preprocess original data
 phospho <- read.delim(file.path(DIR_TAB, "Phosphoproteomics_iBAQ103_log2quantile_normlization_impute.txt"))
 dim(phospho)
+
 id_match <- read.delim(file.path(DIR_TAB, "Phospho_IDs_Protein_Gene.txt"))
 dim(id_match)
 
@@ -34,37 +38,16 @@ phospho <- phospho[-grep("^_", phospho$Phospho_site), ]
 dim(phospho)
 
 # Pair file names
-pair_file <- readRDS(paste0(DIR_RDS, "Proteome_file_name_pairing.rds"))
+colnames(phospho) <- sub("^([A-Z]+)(\\d{6})$", "\\10\\2", colnames(phospho))
+pair_file <- read.csv(file.path(DIR_TAB, "ms_sample_name_pairing.csv"))
+pair_file$InnerSample <- sub("^([A-Z]+)(\\d{6})$", "\\10\\2", pair_file$InnerSample)
 
-for (i in 2:ncol(phospho)) {
-  tmp_sample <- colnames(phospho)[i]
-  if (str_length(tmp_sample) < 8) {
-    if (grepl("C", tmp_sample)) {
-      tmp_sample <- paste0("C0", gsub("[C|N]", "", tmp_sample))
-    } else {
-      tmp_sample <- paste0("N0", gsub("[C|N]", "", tmp_sample))
-    }
-  }
-  colnames(phospho)[i] <- tmp_sample
-}
-
-for (i in 1:nrow(pair_file)) {
-  tmp_sample <- pair_file$OriName[i]
-  if (str_length(tmp_sample) < 8) {
-    if (grepl("C", tmp_sample)) {
-      tmp_sample <- paste0("C0", gsub("[C|N]", "", tmp_sample))
-    } else {
-      tmp_sample <- paste0("N0", gsub("[C|N]", "", tmp_sample))
-    }
-  }
-  pair_file$OriName[i] <- tmp_sample
-}
-
-phospho <- phospho[ , c(TRUE, colnames(phospho)[-1] %in% pair_file$OriName)]
+phospho <- phospho[ , c(TRUE, colnames(phospho)[-1] %in% pair_file$InnerSample)]
 dim(phospho)
 
-rownames(pair_file) <- pair_file$OriName
-colnames(phospho)[-1] <- pair_file[colnames(phospho)[-1], "TargetName"]
+sample_map <- setNames(pair_file$ZipSample, pair_file$InnerSample)
+colnames(phospho)[-1] <- sample_map[colnames(phospho)[-1]]
+
 rm_dup <- c(which(phospho$Phospho_site == "TMPO_S184")[1],
             which(phospho$Phospho_site == "TMPO_S306")[1])
 phospho <- phospho[-rm_dup, ]
@@ -74,8 +57,9 @@ phospho <- phospho[ , -1]
 
 saveRDS(phospho, file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
 
-
-phospho <- file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds")
+#################
+# Formal analysis
+phospho <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
 
 mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
 common_sample <- intersect(colnames(phospho), colnames(mtx_cpm))
@@ -93,6 +77,7 @@ abund_ef <- data.frame(
 )
 
 cor_ef_phos <- psych::corr.test(abund_ef$Enterococcus_faecalis, t(as.matrix(phos_tumour)))
+saveRDS(cor_ef_phos, file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
 
 cor_res <- data.frame(
   point = colnames(cor_ef_phos$r),
@@ -113,6 +98,7 @@ phos_cont <- phos_tumour %>%
   filter(intensity > 3.891872) %>%
   mutate(log_intensity = log2(intensity))
 
+# Logistic regression for detected/undetected signals
 logistic_res <- phos_detect %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
@@ -120,19 +106,16 @@ logistic_res <- phos_detect %>%
   mutate(
     n_present = map_int(data, ~sum(.$present)),
     n_absent = map_int(data, ~sum(.$present == 0)),
-    fit = map(data, ~{
-      if(sum(.$present) < 2 || sum(.$present == 0) < 2) {
-        return(NULL)
-      }
-      tryCatch(
-        glm(present ~ Enterococcus_faecalis, data = ., family = binomial, 
-            control = glm.control(maxit = 50)),
-        warning = function(w) NULL,
-        error = function(e) NULL
-      )
-    }),
-    converged = map_lgl(fit, ~!is.null(.) && .$converged),
-    tidied = map(fit, ~if(!is.null(.)) tidy(.) else tibble())
+    prop_present = n_present / (n_present + n_absent)
+  ) %>%
+  # Require at least 10 in each category AND between 10-90% detection
+  filter(n_present >= 10, n_absent >= 10, 
+         prop_present > 0.1, prop_present < 0.9) %>%
+  mutate(
+    fit = map(data, ~glm(present ~ Enterococcus_faecalis, data = ., 
+                         family = binomial)),
+    converged = map_lgl(fit, ~.$converged),
+    tidied = map(fit, tidy)
   ) %>%
   filter(converged) %>%
   unnest(tidied) %>%
@@ -141,10 +124,11 @@ logistic_res <- phos_detect %>%
     OR = exp(estimate),
     p_adj = p.adjust(p.value, method = "BH")
   ) %>%
-  select(feature, estimate, OR, p.value, p_adj)
+  select(feature, estimate, OR, p.value, p_adj, n_present, n_absent)
 
-write.csv(logistic_res, file.path(DIR_TAB, "Phos_logistic_sites.csv"))
+write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
 
+# Spearman correaltion for detected intensities
 cont_res <- phos_cont %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
@@ -158,7 +142,7 @@ cont_res <- phos_cont %>%
   ) %>%
   mutate(p_adj = p.adjust(p_val, method = "BH"))
 
-write.csv(cont_res, file.path(DIR_TAB, "Phos_count_sites.csv"))
+write.csv(cont_res, file.path(DIR_TAB, "Phos_continuous_sites.csv"))
 
 merged_res <- logistic_res %>%
   rename(logistic_est = estimate,
@@ -174,3 +158,43 @@ merged_res <- logistic_res %>%
   )
 
 write.csv(merged_res, file.path(DIR_TAB, "Phos_merged_res.csv"))
+
+########################
+# Significance selection
+sig_discrete <- merged_res %>%
+  filter(logistic_padj < 0.1)
+dim(sig_discrete)
+
+sig_continuous <- merged_res %>%
+  filter(cont_padj < 0.1)
+dim(sig_continuous)
+
+sig_both <- merged_res %>%
+  filter(logistic_padj < 0.1 & cont_padj < 0.1)
+dim(sig_both)
+
+plot_feature <- "CARMIL2_S1328"
+
+ggplot(cont_res, aes(x = rho, y = -log10(p_adj))) +
+  geom_point(aes(color = p_adj < 0.05 & abs(rho) > 0.3), alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-0.3, 0.3), linetype = "dashed", color = "blue") +
+  scale_color_manual(values = c("grey60", "red3"), 
+                     labels = c("Not significant", "Significant")) +
+  labs(x = "Spearman correlation (ρ)", 
+       y = "-log10(adjusted p-value)",
+       color = NULL,
+       title = "Phosphosite correlation with E. faecalis abundance") +
+  theme_minimal()
+
+ggplot(logistic_strict, aes(x = estimate, y = -log10(p_adj))) +
+  geom_point(aes(color = p_adj < 0.05 & abs(estimate) > 0.5), alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "blue") +
+  scale_color_manual(values = c("grey60", "blue3"), 
+                     labels = c("Not significant", "Significant")) +
+  labs(x = "Log odds ratio (coefficient)", 
+       y = "-log10(adjusted p-value)",
+       color = NULL,
+       title = "Phosphosite detection vs E. faecalis abundance") +
+  theme_minimal()
