@@ -10,6 +10,7 @@ library(stringr)
 library(tidyr)
 library(broom)
 library(purrr)
+library(circlize)
 library(ggplot2)
 
 set.seed(42)
@@ -128,73 +129,129 @@ logistic_res <- phos_detect %>%
 
 write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
 
-# Spearman correaltion for detected intensities
-cont_res <- phos_cont %>%
-  left_join(abund_ef, by = "sample") %>%
-  group_by(feature) %>%
-  summarise(
-    n = sum(!is.na(Enterococcus_faecalis) & !is.na(log_intensity)),
-    rho = if(n > 2) cor(Enterococcus_faecalis, log_intensity, 
-                        method = "spearman", use = "complete.obs") else NA_real_,
-    p_val = if(n > 2) cor.test(Enterococcus_faecalis, log_intensity, 
-                               method = "spearman", exact = FALSE)$p.value else NA_real_,
-    .groups = "drop"
-  ) %>%
-  mutate(p_adj = p.adjust(p_val, method = "BH"))
-
-write.csv(cont_res, file.path(DIR_TAB, "Phos_continuous_sites.csv"))
-
-merged_res <- logistic_res %>%
-  rename(logistic_est = estimate,
-         logistic_OR = OR,
-         logistic_p = p.value,
-         logistic_padj = p_adj) %>%
-  full_join(
-    cont_res %>%
-      rename(spearman_rho = rho,
-             cont_p = p_val,
-             cont_padj = p_adj),
-    by = "feature"
-  )
-
-write.csv(merged_res, file.path(DIR_TAB, "Phos_merged_res.csv"))
-
 ########################
 # Significance selection
-sig_discrete <- merged_res %>%
-  filter(logistic_padj < 0.1)
+sig_discrete <- logistic_res %>%
+  filter(p_adj < 0.05)
 dim(sig_discrete)
+write.csv(sig_discrete, file.path(DIR_TAB, "Phospho_discrete_significance.csv"))
 
-sig_continuous <- merged_res %>%
-  filter(cont_padj < 0.1)
-dim(sig_continuous)
+# Landscape: all significant features
+circos_data <- sig_discrete %>%
+  mutate(
+    log2OR = log2(OR),
+    neg_log10_padj = -log10(p_adj),
+    total = n_present + n_absent,
+    presence_ratio = n_present / total,
+    show_label = abs(estimate) > 4
+  ) %>%
+  arrange(-log2OR)
 
-sig_both <- merged_res %>%
-  filter(logistic_padj < 0.1 & cont_padj < 0.1)
-dim(sig_both)
+pdf(file.path(DIR_FIG, "A_Circos_phosphosites_presence_with_ef.pdf"), width = 12, height = 12)
+circos.par(start.degree = 90, 
+           gap.degree = 360 / nrow(circos_data) * 0.5,
+           track.margin = c(0.01, 0.01),
+           cell.padding = c(0.02, 0, 0.02, 0))
 
-plot_feature <- "CARMIL2_S1328"
+circos.initialize(factors = circos_data$feature, 
+                  xlim = matrix(c(0, 1), ncol = 2, nrow = nrow(circos_data), byrow = TRUE))
 
-ggplot(cont_res, aes(x = rho, y = -log10(p_adj))) +
-  geom_point(aes(color = p_adj < 0.05 & abs(rho) > 0.3), alpha = 0.6) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-  geom_vline(xintercept = c(-0.3, 0.3), linetype = "dashed", color = "blue") +
-  scale_color_manual(values = c("grey60", "red3"), 
-                     labels = c("Not significant", "Significant")) +
-  labs(x = "Spearman correlation (ρ)", 
-       y = "-log10(adjusted p-value)",
-       color = NULL,
-       title = "Phosphosite correlation with E. faecalis abundance") +
-  theme_minimal()
+# Track 1: log2OR
+circos.track(factors = circos_data$feature, 
+             y = circos_data$log2OR,
+             panel.fun = function(x, y) {
+               circos.barplot(value = y, pos = 0.5, 
+                              col = ifelse(y > 0, "#E74C3C", "#3498DB"),
+                              border = NA)
+             },
+             bg.border = NA, track.height = 0.3, ylim = range(circos_data$log2OR))
 
-ggplot(logistic_strict, aes(x = estimate, y = -log10(p_adj))) +
-  geom_point(aes(color = p_adj < 0.05 & abs(estimate) > 0.5), alpha = 0.6) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "blue") +
-  scale_color_manual(values = c("grey60", "blue3"), 
-                     labels = c("Not significant", "Significant")) +
-  labs(x = "Log odds ratio (coefficient)", 
-       y = "-log10(adjusted p-value)",
-       color = NULL,
-       title = "Phosphosite detection vs E. faecalis abundance") +
-  theme_minimal()
+# Track 2: -log10(p_adj)
+col_fun_p <- colorRamp2(c(min(circos_data$neg_log10_padj), 
+                          max(circos_data$neg_log10_padj)), 
+                        c("white", "darkred"))
+circos.track(factors = circos_data$feature,
+             y = circos_data$neg_log10_padj,
+             panel.fun = function(x, y) {
+               circos.rect(0, 0, 1, 1,
+                           col = col_fun_p(y), border = NA)
+             },
+             bg.border = NA, track.height = 0.15, ylim = c(0, 1))
+
+# Track 3: n_present
+circos.track(factors = circos_data$feature,
+             y = circos_data$n_present,
+             panel.fun = function(x, y) {
+               circos.barplot(value = y, pos = 0.5,
+                              col = "#27AE60", border = NA)
+             },
+             bg.border = NA, track.height = 0.2, ylim = c(0, max(circos_data$n_present)))
+
+# Track 4: n_absent
+circos.track(factors = circos_data$feature,
+             y = circos_data$n_absent,
+             panel.fun = function(x, y) {
+               circos.barplot(value = y, pos = 0.5,
+                              col = "#F39C12", border = NA)
+             },
+             bg.border = NA, track.height = 0.2, ylim = c(0, max(circos_data$n_absent)))
+
+legend("topright", 
+       legend = c("log2OR (+)", "log2OR (-)", "-log10(padj)", "n_present", "n_absent"),
+       fill = c("#E74C3C", "#3498DB", "darkred", "#27AE60", "#F39C12"),
+       bty = "n", cex = 0.8)
+
+circos.clear()
+dev.off()
+
+##########
+features_to_plot <- sig_discrete[abs(sig_discrete$estimate) > 4, ]
+features_to_plot <- features_to_plot[order(-features_to_plot$estimate), ]$feature
+
+plot_percent <- phos_detect %>%
+  filter(feature %in% features_to_plot) %>%
+  left_join(abund_ef, by = "sample") %>%
+  mutate(ef_quartile = cut(Enterococcus_faecalis, 
+                           breaks = quantile(Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE),
+                           include.lowest = TRUE,
+                           labels = c("Q1", "Q2", "Q3", "Q4")))
+
+summary_data <- plot_percent %>%
+  group_by(feature, ef_quartile) %>%
+  summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop")
+
+plot_percent$feature <- factor(plot_percent$feature, levels = features_to_plot)
+summary_data$feature <- factor(summary_data$feature, levels = features_to_plot)
+
+annotation_data <- sig_discrete[abs(sig_discrete$logistic_est) > 4, ] %>%
+  mutate(label = paste0("log2OR = ", round(logistic_est, 2), 
+                        "\np.adj = ", format(logistic_padj, 
+                                             digits = 2, scientific = TRUE))) %>%
+  select(feature, label)
+
+annotation_data$feature <- factor(annotation_data$feature, levels = features_to_plot)
+
+pdf(file.path(DIR_FIG, "B_Points_top_phosphosites_ef.pdf"), width = 12, height = 9)
+ggplot() +
+  geom_jitter(data = plot_percent, 
+              aes(x = ef_quartile, y = present), 
+              alpha = 0.3, color = "grey50", size = 1, height = 0.02, width = 0.1) +
+  geom_line(data = summary_data, 
+            aes(x = ef_quartile, y = presence_pct, group = feature), 
+            color = "blue", linewidth = 0.8) +
+  geom_point(data = summary_data, 
+             aes(x = ef_quartile, y = presence_pct, fill = ef_quartile), 
+             color = "black", shape = 21, size = 4) +
+  geom_text(data = annotation_data,
+            aes(x = Inf, y = Inf, label = label),
+            hjust = 1.05, vjust = 1.2, size = 3, lineheight = 0.8) +
+  scale_fill_brewer(palette = "Oranges") +
+  facet_wrap(~ feature, scales = "free_y") +
+  labs(x = "E.faecalis abundance (quartiles)",
+       y = "Presence") +
+  theme_minimal() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        strip.text = element_text(size = 10),
+        legend.position = "none")
+dev.off()
