@@ -166,12 +166,6 @@ rownames(care_mtx) <- care_aggregated$Response
 
 hexp_filt <- hexp_filt[common_genes, ]
 
-cor_care <- cor(hexp_filt, t(care_mtx))
-
-pdf(file.path(DIR_SUP, "B_heatmap_care_samples.pdf"), width = 8, height = 10)
-Heatmap(t(cor_care), name = "Rs")
-dev.off()
-
 # Using gene expression and CARE matrix to predict drug response per patient
 n_top_genes <- 50
 
@@ -232,8 +226,13 @@ care_pred_matrix <- care_feature_pred_df %>%
   column_to_rownames("Drug") %>%
   as.matrix()
 dim(care_pred_matrix)
+care_pred_matrix <- -care_pred_matrix # To align with IDWAS
 
 write.csv(care_pred_matrix, file.path(DIR_TAB, "CARE_predicted_responses.csv"))
+
+pdf(file.path(DIR_SUP, "B_heatmap_care_samples.pdf"), width = 8, height = 10)
+Heatmap(care_pred_matrix, name = "CARE response", show_column_names = F)
+dev.off()
 
 ######################
 # All abundant species
