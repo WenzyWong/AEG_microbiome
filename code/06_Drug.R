@@ -10,6 +10,8 @@ library(psych)
 library(dplyr)
 library(ggplot2)
 library(RColorBrewer)
+library(ggvenn)
+library(paletteer)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -109,7 +111,7 @@ ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) +
         axis.text = element_text(colour = 1))
 dev.off()
 
-#########
+######
 # CARE
 library(rtracklayer) # For importing gtf file
 library(tidyverse)
@@ -277,3 +279,25 @@ ggplot(cor_ef_care_res, aes(x = rs, y = -log10(padj), colour = sig)) +
         axis.text = element_text(colour = 1))
 dev.off()
 
+####################
+# Calculate overlaps
+sensitive_idwas <- cor_ef_idwas_res$drug[cor_ef_idwas_res$sig == "Neg"]
+sensitive_care <- cor_ef_care_res$drug[cor_ef_care_res$sig == "Neg"]
+resistant_idwas <- cor_ef_idwas_res$drug[cor_ef_idwas_res$sig == "Pos"]
+resistant_care <- cor_ef_care_res$drug[cor_ef_care_res$sig == "Pos"]
+
+venn_both <- list(
+  "IDWAS Sensitive" = sensitive_idwas,
+  "CARE Sensitive" = sensitive_care,
+  "CARE Resistant" = resistant_care,
+  "IDWAS Resistant" = resistant_idwas
+)
+pdf(file.path(DIR_FIG, "B_venn.pdf"), width = 6, height = 6)
+ggvenn(venn_both,
+       text_size = 4,
+       text_color = "white",
+       show_percentage = T,
+       fill_color = paletteer_d("ggsci::default_jama")[c(3, 5, 2, 4)],
+       fill_alpha = 0.7,
+       stroke_color = "white")
+dev.off()
