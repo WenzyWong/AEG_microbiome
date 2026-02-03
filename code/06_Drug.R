@@ -234,6 +234,51 @@ pdf(file.path(DIR_SUP, "B_heatmap_care_samples.pdf"), width = 8, height = 10)
 Heatmap(care_pred_matrix, name = "CARE response", show_column_names = F)
 dev.off()
 
+# Correlation between abundance and care-predicted responses
+cor_ef_care <- corr.test(t(as.matrix(care_pred_matrix)), 
+                         t(as.matrix(abund_mtx["Enterococcus_faecalis", colnames(care_pred_matrix)])),
+                         method = "spearman")
+cor_ef_care_r <- cor_ef_care$r
+cor_ef_care_p <- cor_ef_care$p.adj
+
+cor_ef_care_res <- data.frame(
+  drug = rownames(cor_ef_care_r),
+  rs = cor_ef_care_r[ , 1],
+  padj = cor_ef_care_p[ , 1]
+) %>%
+  mutate(sig = case_when(rs > 0.3 & padj < 0.05 ~ "Pos",
+                         rs < -0.3 & padj < 0.05 ~ "Neg",
+                         TRUE ~ "NS"))
+
+cor_ef_care_highlight <- cor_ef_care_res %>%
+  arrange(rs)
+cor_ef_care_highlight <- cor_ef_care_highlight[c(1:4, 
+                                                 (nrow(cor_ef_care_highlight) - 3):
+                                                   nrow(cor_ef_care_highlight)), ]
+
+pdf(file.path(DIR_FIG, "A_volc_EF_cor_care.pdf"), width = 4, height = 3.5)
+ggplot(cor_ef_care_res, aes(x = rs, y = -log10(padj), colour = sig)) + 
+  ggtitle("EF correlated drugs (CARE)") + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("#126CAA", "grey", "#9A342C")) +
+  geom_point(cor_ef_care_highlight, shape = 21, color = "#FFB900FF",
+             mapping = aes(x = rs, y = -log10(padj)),
+             size = 2.7) + 
+  ggrepel::geom_label_repel(data = cor_ef_care_highlight,
+                            aes(x = rs, y = -log10(padj), 
+                                label = drug),
+                            color="grey27",
+                            alpha = .8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = 0.3, linetype = "dashed") +
+  geom_vline(xintercept = -0.3, linetype = "dashed") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+dev.off()
+
+
+
 ######################
 # All abundant species
 all(colnames(idwas_mtx) == colnames(abund_mtx))
