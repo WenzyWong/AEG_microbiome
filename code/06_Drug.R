@@ -114,7 +114,8 @@ dev.off()
 library(rtracklayer) # For importing gtf file
 library(tidyverse)
 library(survival)
-library(pROC)
+library(lme4)
+library(lmerTest)   # Satterthwaite df & p
 
 anno_dt <- import("/data/yzwang/reference/gencode_ref/gencode_human_annotation.gtf") %>%
   as.data.frame()
@@ -122,13 +123,13 @@ coding_gene_list <- anno_dt$gene_name[anno_dt$gene_type == "protein_coding"] %>%
 length(coding_gene_list)
 rm(anno_dt)
 
-# Preprocessing human expression matrix
+# Pre-processing human expression matrix
 hexp_tpm <- readRDS(paste0(DIR_RDS, "AEG_humanTPM_Symbol.rds"))
 hexp_tpm <- hexp_tpm[rownames(hexp_tpm) %in% coding_gene_list, ]
 hexp_tpm <- hexp_tpm[rowMeans(hexp_tpm) > 1, ]
 dim(hexp_tpm)
 
-hexp_tpm <- hexp_tpm[common_genes, grep("C", colnames(hexp_tpm))]
+hexp_tpm <- hexp_tpm[, grep("C", colnames(hexp_tpm))]
 hexp_norm <- t(apply(hexp_tpm, 1, function(gene_values) {
   (gene_values - mean(gene_values, na.rm = TRUE)) / sd(gene_values, na.rm = TRUE)
 }))
@@ -163,9 +164,76 @@ length(common_genes)
 care_mtx <- care_aggregated[ , common_genes]
 rownames(care_mtx) <- care_aggregated$Response
 
+hexp_filt <- hexp_filt[common_genes, ]
+
 cor_care <- cor(hexp_filt, t(care_mtx))
 
-Heatmap(cor_care)
+pdf(file.path(DIR_SUP, "B_heatmap_care_samples.pdf"), width = 8, height = 10)
+Heatmap(t(cor_care), name = "Rs")
+dev.off()
+
+# Using gene expression and CARE matrix to predict drug response per patient
+n_top_genes <- 50
+
+drug_prediction_models <- list()
+care_feature_predictions <- list()
+
+for(drug in rownames(care_mtx)) {
+  # Select top genes by absolute CARE score
+  drug_care <- care_mtx[drug, ]
+  common_genes <- intersect(rownames(hexp_filt), names(drug_care))
+  drug_care_subset <- drug_care[common_genes]
+  
+  top_gene_indices <- order(unlist(abs(drug_care_subset)), decreasing = TRUE)[1:n_top_genes]
+  top_genes <- names(drug_care_subset)[top_gene_indices]
+  
+  # Feature matrix: patients × top genes
+  feature_matrix <- t(hexp_filt[top_genes, , drop = FALSE])
+  
+  model_data <- as.data.frame(feature_matrix)
+  model_data$Sample <- rownames(feature_matrix)
+  
+  pca_result <- prcomp(feature_matrix, scale. = TRUE, center = TRUE)
+  n_pcs <- min(10, ncol(pca_result$x))
+  pc_scores <- pca_result$x[, 1:n_pcs]
+  
+  # Weights: variance explained by each PC
+  variance_explained <- pca_result$sdev[1:n_pcs]^2 / sum(pca_result$sdev^2)
+  predicted_response <- pc_scores %*% variance_explained
+  
+  care_feature_predictions[[drug]] <- data.frame(
+    Drug = drug,
+    Sample = colnames(hexp_filt),
+    Predicted_Response = as.numeric(predicted_response),
+    N_Features = length(top_genes),
+    stringsAsFactors = FALSE
+  )
+  
+  drug_prediction_models[[drug]] <- list(
+    top_genes = top_genes,
+    pca_model = pca_result,
+    variance_explained = variance_explained
+  )
+}
+care_feature_pred_df <- bind_rows(care_feature_predictions)
+
+care_feature_pred_df <- care_feature_pred_df %>%
+  group_by(Drug) %>%
+  mutate(Predicted_Response_Scaled = scale(Predicted_Response)[,1]) %>%
+  ungroup()
+
+# Convert long format to matrix: drugs × samples
+care_pred_matrix <- care_feature_pred_df %>%
+  select(Drug, Sample, Predicted_Response_Scaled) %>%
+  pivot_wider(
+    names_from = Sample,
+    values_from = Predicted_Response_Scaled
+  ) %>%
+  column_to_rownames("Drug") %>%
+  as.matrix()
+dim(care_pred_matrix)
+
+write.csv(care_pred_matrix, file.path(DIR_TAB, "CARE_predicted_responses.csv"))
 
 ######################
 # All abundant species
