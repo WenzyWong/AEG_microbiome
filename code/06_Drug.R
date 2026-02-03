@@ -281,11 +281,17 @@ dev.off()
 
 ####################
 # Calculate overlaps
-sensitive_idwas <- cor_ef_idwas_res$drug[cor_ef_idwas_res$sig == "Neg"]
-sensitive_care <- cor_ef_care_res$drug[cor_ef_care_res$sig == "Neg"]
-resistant_idwas <- cor_ef_idwas_res$drug[cor_ef_idwas_res$sig == "Pos"]
-resistant_care <- cor_ef_care_res$drug[cor_ef_care_res$sig == "Pos"]
+process_drug <- function(res, sig_type) {
+  drugs <- res$drug[res$sig == sig_type]
+  drugs[!grepl("\\-|[1-9]", drugs)]
+}
 
+sensitive_idwas <- process_drug(cor_ef_idwas_res, "Neg")
+sensitive_care <- process_drug(cor_ef_care_res, "Neg")
+resistant_idwas <- process_drug(cor_ef_idwas_res, "Pos")
+resistant_care <- process_drug(cor_ef_care_res, "Pos")
+
+# Venn
 venn_both <- list(
   "IDWAS Sensitive" = sensitive_idwas,
   "CARE Sensitive" = sensitive_care,
@@ -300,4 +306,41 @@ ggvenn(venn_both,
        fill_color = paletteer_d("ggsci::default_jama")[c(3, 5, 2, 4)],
        fill_alpha = 0.7,
        stroke_color = "white")
+dev.off()
+
+# Point
+all_drugs <- unique(c(sensitive_idwas, resistant_idwas, 
+                      sensitive_care, resistant_care))
+
+plot_points <- data.frame(
+  Drug = rep(all_drugs, 2),
+  Method = rep(c("IDWAS", "CARE"), each = length(all_drugs)),
+  Sensitivity = NA,
+  P = NA,
+  Sig = NA
+)
+
+idwas_match <- match(all_drugs, cor_ef_idwas_res$drug)
+plot_points[plot_points$Method == "IDWAS", "Sensitivity"] <- cor_ef_idwas_res$r[idwas_match]
+plot_points[plot_points$Method == "IDWAS", "Padj"] <- cor_ef_idwas_res$padj[idwas_match]
+plot_points[plot_points$Method == "IDWAS", "Sig"] <- cor_ef_idwas_res$sig[idwas_match]
+
+care_match <- match(all_drugs, cor_ef_care_res$drug)
+plot_points[plot_points$Method == "CARE", "Sensitivity"] <- cor_ef_care_res$r[care_match]
+plot_points[plot_points$Method == "CARE", "Padj"] <- cor_ef_care_res$padj[care_match]
+plot_points[plot_points$Method == "CARE", "Sig"] <- cor_ef_care_res$sig[care_match]
+
+plot_points <- plot_points[order(plot_points$Method, plot_points$Sensitivity), ]
+
+pdf(file.path(DIR_FIG, "C_points_significant_drugs.pdf"), width = 5, height = 10)
+ggplot(plot_points, aes(x = Method, y = factor(Drug, levels = unique(Drug)), 
+                        fill = Sensitivity)) + 
+  geom_point(shape = 21, aes(size = -log10(Padj))) +
+  geom_point(data = subset(plot_points, Sig == "NS"), 
+             shape = 4, size = 3, stroke = 1.5, color = "black") +
+  scale_size(range = c(1, 5)) +
+  scale_fill_distiller(palette = "RdBu", limits = c(-0.7, 0.7)) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
 dev.off()
