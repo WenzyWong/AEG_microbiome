@@ -12,6 +12,7 @@ library(broom)
 library(purrr)
 library(circlize)
 library(ggplot2)
+library(factoextra)
 
 set.seed(42)
 
@@ -77,12 +78,14 @@ abund_ef <- data.frame(
   t(mtx_cpm["Enterococcus_faecalis", common_tumour] / 1e+4)
 )
 
-cor_ef_phos <- psych::corr.test(abund_ef$Enterococcus_faecalis, t(as.matrix(phos_tumour)))
-saveRDS(cor_ef_phos, file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
+#cor_ef_phos <- psych::corr.test(abund_ef$Enterococcus_faecalis, t(as.matrix(phos_tumour)))
+#saveRDS(cor_ef_phos, file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
+cor_ef_phos <- readRDS(file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
 
 cor_res <- data.frame(
   point = colnames(cor_ef_phos$r),
-  rs = as.numeric(cor_ef_phos$r),
+  r = as.numeric(cor_ef_phos$r),
+  p = as.numeric(cor_ef_phos$p),
   padj = as.numeric(cor_ef_phos$p.adj)
 )
 
@@ -91,13 +94,6 @@ phos_detect <- phos_tumour %>%
   mutate(feature = rownames(.)) %>%
   pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
   mutate(present = as.integer(intensity > 3.891872))
-
-phos_cont <- phos_tumour %>%
-  as.data.frame() %>%
-  mutate(feature = rownames(.)) %>%
-  pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
-  filter(intensity > 3.891872) %>%
-  mutate(log_intensity = log2(intensity))
 
 # Logistic regression for detected/undetected signals
 logistic_res <- phos_detect %>%
@@ -127,7 +123,8 @@ logistic_res <- phos_detect %>%
   ) %>%
   select(feature, estimate, OR, p.value, p_adj, n_present, n_absent)
 
-write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
+#write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
+logistic_res <- read.csv(file.path(DIR_TAB, "Phos_discrete_sites.csv"), row.names = 1)
 
 ########################
 # Significance selection
@@ -204,7 +201,9 @@ legend("topright",
 circos.clear()
 dev.off()
 
-##########
+#####################################
+# Selecting feature for visualisation
+# This might need adjustment based on later interests
 features_to_plot <- sig_discrete[abs(sig_discrete$estimate) > 4, ]
 features_to_plot <- features_to_plot[order(-features_to_plot$estimate), ]$feature
 
@@ -223,9 +222,9 @@ summary_data <- plot_percent %>%
 plot_percent$feature <- factor(plot_percent$feature, levels = features_to_plot)
 summary_data$feature <- factor(summary_data$feature, levels = features_to_plot)
 
-annotation_data <- sig_discrete[abs(sig_discrete$logistic_est) > 4, ] %>%
-  mutate(label = paste0("log2OR = ", round(logistic_est, 2), 
-                        "\np.adj = ", format(logistic_padj, 
+annotation_data <- sig_discrete[abs(sig_discrete$estimate) > 4, ] %>%
+  mutate(label = paste0("log2OR = ", round(estimate, 2), 
+                        "\np.adj = ", format(p_adj, 
                                              digits = 2, scientific = TRUE))) %>%
   select(feature, label)
 
@@ -254,4 +253,50 @@ ggplot() +
         axis.text = element_text(colour = 1),
         strip.text = element_text(size = 10),
         legend.position = "none")
+dev.off()
+
+############
+# Clustering
+features_sig <- sig_discrete$feature
+
+summary_sig <- phos_detect %>%
+  filter(feature %in% features_sig) %>%
+  left_join(abund_ef, by = "sample") %>%
+  mutate(ef_quartile = cut(Enterococcus_faecalis,
+                           breaks = quantile(Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE),
+                           include.lowest = TRUE,
+                           labels = c("Q1", "Q2", "Q3", "Q4"))) %>%
+  group_by(feature, ef_quartile) %>%
+  summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop")
+
+wide_sig <- summary_sig %>%
+  pivot_wider(names_from = ef_quartile, values_from = presence_pct)
+
+mat_sig <- as.matrix(wide_sig[, c("Q1", "Q2", "Q3", "Q4")])
+rownames(mat_sig) <- wide_sig$feature
+
+fviz_nbclust(mat_sig, kmeans, method = "silhouette", k.max = 8)
+
+k <- 5
+km_sig <- kmeans(mat_sig, centers = k, nstart = 50)
+
+wide_sig$cluster <- factor(km_sig$cluster)
+summary_sig_new <- summary_sig %>%
+  left_join(wide_sig %>% select(feature, cluster), by = "feature")
+
+plot_percent <- plot_percent %>%
+  left_join(wide_sig %>% select(feature, cluster), by = "feature")
+
+pdf(file.path(DIR_FIG, "C_Clusters.pdf"), height = 5, width = 6)
+ggplot(summary_sig_new, aes(x = ef_quartile, y = presence_pct, group = feature,
+                            col = cluster)) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_colour_manual(values = c("tomato2", "grey", "steelblue2",
+                                 "tomato4", "steelblue4")) +
+  facet_wrap(~ cluster, labeller = label_both) +
+  labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
+  theme_bw() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
 dev.off()
