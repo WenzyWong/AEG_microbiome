@@ -96,7 +96,7 @@ phos_detect <- phos_tumour %>%
   mutate(present = as.integer(intensity > 3.891872))
 
 # Logistic regression for detected/undetected signals
-logistic_res <- phos_detect %>%
+logistic_ori <- phos_detect %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
   nest() %>%
@@ -105,9 +105,8 @@ logistic_res <- phos_detect %>%
     n_absent = map_int(data, ~sum(.$present == 0)),
     prop_present = n_present / (n_present + n_absent)
   ) %>%
-  # Require at least 10 in each category AND between 10-90% detection
-  filter(n_present >= 10, n_absent >= 10, 
-         prop_present > 0.1, prop_present < 0.9) %>%
+  # Between 10-90% detection
+  filter(prop_present > 0.1, prop_present < 0.9) %>%
   mutate(
     fit = map(data, ~glm(present ~ Enterococcus_faecalis, data = ., 
                          family = binomial)),
@@ -118,10 +117,12 @@ logistic_res <- phos_detect %>%
   unnest(tidied) %>%
   filter(term == "Enterococcus_faecalis") %>%
   mutate(
-    OR = exp(estimate),
-    p_adj = p.adjust(p.value, method = "BH")
+    OR = exp(estimate)
   ) %>%
-  select(feature, estimate, OR, p.value, p_adj, n_present, n_absent)
+  select(feature, estimate, OR, p.value, n_present, n_absent)
+
+logistic_res <- logistic_ori %>%
+  mutate(padj = p.adjust(p.value, method = "BH"))
 
 #write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
 logistic_res <- read.csv(file.path(DIR_TAB, "Phos_discrete_sites.csv"), row.names = 1)
@@ -129,7 +130,7 @@ logistic_res <- read.csv(file.path(DIR_TAB, "Phos_discrete_sites.csv"), row.name
 ########################
 # Significance selection
 sig_discrete <- logistic_res %>%
-  filter(p_adj < 0.05)
+  filter(padj < 0.05)
 dim(sig_discrete)
 write.csv(sig_discrete, file.path(DIR_TAB, "Phospho_discrete_significance.csv"))
 
@@ -137,7 +138,7 @@ write.csv(sig_discrete, file.path(DIR_TAB, "Phospho_discrete_significance.csv"))
 circos_data <- sig_discrete %>%
   mutate(
     log2OR = log2(OR),
-    neg_log10_padj = -log10(p_adj),
+    neg_log10_padj = -log10(padj),
     total = n_present + n_absent,
     presence_ratio = n_present / total,
     show_label = abs(estimate) > 4
@@ -163,7 +164,7 @@ circos.track(factors = circos_data$feature,
              },
              bg.border = NA, track.height = 0.3, ylim = range(circos_data$log2OR))
 
-# Track 2: -log10(p_adj)
+# Track 2: -log10(padj)
 col_fun_p <- colorRamp2(c(min(circos_data$neg_log10_padj), 
                           max(circos_data$neg_log10_padj)), 
                         c("white", "darkred"))
@@ -196,7 +197,7 @@ circos.track(factors = circos_data$feature,
 legend("topright", 
        legend = c("log2OR (+)", "log2OR (-)", "-log10(padj)", "n_present", "n_absent"),
        fill = c("#E74C3C", "#3498DB", "darkred", "#27AE60", "#F39C12"),
-       bty = "n", cex = 0.8)
+       bty = "n", cex = 0.7)
 
 circos.clear()
 dev.off()
@@ -224,7 +225,7 @@ summary_data$feature <- factor(summary_data$feature, levels = features_to_plot)
 
 annotation_data <- sig_discrete[abs(sig_discrete$estimate) > 4, ] %>%
   mutate(label = paste0("log2OR = ", round(estimate, 2), 
-                        "\np.adj = ", format(p_adj, 
+                        "\np.adj = ", format(padj, 
                                              digits = 2, scientific = TRUE))) %>%
   select(feature, label)
 
@@ -292,8 +293,8 @@ ggplot(summary_sig_new, aes(x = ef_quartile, y = presence_pct, group = feature,
                             col = cluster)) +
   geom_line() +
   geom_point(size = 2) +
-  scale_colour_manual(values = c("tomato2", "grey", "steelblue2",
-                                 "tomato4", "steelblue4")) +
+  scale_colour_manual(values = c("tomato4", "tomato2", "steelblue2",
+                                 "grey", "steelblue4")) +
   facet_wrap(~ cluster, labeller = label_both) +
   labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
   theme_bw() +
