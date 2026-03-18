@@ -131,7 +131,8 @@ abundSpTop$Diff.Trend <- diffSp$Change
 abundSpTop$Diff.Padj <- diffSp$P.adj
 abundSpTop$Diff.Log2FC <- diffSp$log2FC
 
-saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
+#saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
+abundSpTop <- readRDS(file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
 
 colGenera <- paste0(substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
                                                                     23:27, 2, 4, 5, 7, 9)], 
