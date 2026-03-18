@@ -122,7 +122,9 @@ logistic_ori <- phos_detect %>%
   select(feature, estimate, OR, p.value, n_present, n_absent)
 
 logistic_res <- logistic_ori %>%
-  mutate(padj = p.adjust(p.value, method = "BH"))
+  mutate(padj = p.adjust(p.value, method = "BH")) %>%
+  filter(padj < 0.05)
+dim(logistic_res)
 
 #write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
 logistic_res <- read.csv(file.path(DIR_TAB, "Phos_discrete_sites.csv"), row.names = 1)
