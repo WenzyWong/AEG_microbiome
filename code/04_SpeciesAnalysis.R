@@ -30,6 +30,8 @@ library(tidyverse)
 library(tidyfst)
 library(pulsar)
 library(ggClusterNet) # other requirements: ggraph, tidyfst
+library(ggraph)
+library(RColorBrewer)
 # Regression
 library(compositions)
 library(glmnet)
@@ -577,7 +579,7 @@ dev.off()
 
 ####################
 # Network similarity
-module <- module.compare.m(ps = NULL, corg = cortab, zipi = FALSE,
+module <- module.compare.m(ps = ps.obj, corg = cortab, zipi = FALSE,
                            zoom = 0.2, padj = F, n = 3)
 saveRDS(module, file.path(DIR_RDS, "AEG_network_module.rds"))
 
@@ -754,76 +756,138 @@ coef_elnet <- coef(elnet_fit, s = "lambda.min") %>%
   as.matrix(.) %>%
   as.data.frame(.) %>%
   mutate(species = rownames(.)) %>%
-  filter(species != "(Intercept)") %>%
-  mutate(rank_contribute = rank(-lambda.min)) %>%
-  filter(lambda.min > 1)
+  filter(species != "(Intercept)")
+
+positive_vals <- coef_elnet$lambda.min[coef_elnet$lambda.min > 0]
+coef_elnet <- coef_elnet %>%
+  mutate(rank_contribute = ifelse(
+    lambda.min > 0,
+    rank(-positive_vals)[match(lambda.min, positive_vals)],
+    NA_real_
+  ))
 
 # Rank all parameters
-# & Species %in% coef_elnet$species
 saving_normal <- saving_module %>%
   filter(Group == "Normal" & Species %in% coef_elnet$species) %>%
   mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
          rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
 saving_tumour <- saving_module %>%
-  filter(Group == "Tumour"& Species %in% coef_elnet$species) %>%
+  filter(Group == "Tumour" & Species %in% coef_elnet$species) %>%
   mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
          rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
 saving_info <- merge(
   saving_normal[, c("OTU", "Species", "abundance",
                     "rank_degree", "rank_closseness")],
-  saving_tumour[, c("OTU", "Species", 
+  saving_tumour[, c("OTU", "Species",
                     "rank_degree", "rank_closseness")],
   by = c("OTU", "Species"),
   suffixes = c(".normal", ".tumour")
 ) %>%
   mutate(stability_degree = rank(abs(rank_degree.normal - rank_degree.tumour)),
-         rank_degree = (rank(rank_degree.normal) + rank(rank_degree.tumour))/2,
+         rank_degree = (rank(rank_degree.normal) + rank(rank_degree.tumour)) / 2,
          stability_closeness = rank(abs(rank_closseness.normal - rank_closseness.tumour)),
-         rank_satbility = (rank(rank_closseness.normal) + rank(rank_closseness.tumour))/2)
+         rank_satbility = (rank(rank_closseness.normal) + rank(rank_closseness.tumour)) / 2)
 
 saving_info <- saving_info %>%
   filter(Species %in% coef_elnet$species) %>%
-  mutate(diversity_contribute = coef_elnet[Species, "rank_contribute"],
-         rank_abundance = rank(-abundance)) %>%
-  mutate(rank_score = sqrt(stability_degree * rank_degree) + 
-           sqrt(stability_closeness * rank_satbility) + 
-           diversity_contribute + rank_abundance,
-         rank_total = rank(rank_score)) %>%
-  arrange(rank_total)
+  mutate(
+    diversity_contribute = coef_elnet[Species, "rank_contribute"],
+    rank_abundance = rank(-abundance),
+    is_candidate = !is.na(diversity_contribute)
+  ) %>%
+  mutate(
+    rank_score = ifelse(
+      is_candidate,
+      sqrt(stability_degree * rank_degree) +
+        sqrt(stability_closeness * rank_satbility) +
+        diversity_contribute + rank_abundance,
+      NA_real_
+    ),
+    rank_total = ifelse(
+      is_candidate,
+      rank(rank_score[is_candidate])[match(rank_score, sort(rank_score[is_candidate], na.last = NA))],
+      NA_real_
+    )
+  ) %>%
+  arrange(!is.na(rank_total), rank_total)
 
-rank_mtx <- saving_info[ , c("Species", "rank_abundance",
-                             "stability_degree", "rank_degree",
-                             "stability_closeness", "rank_satbility",
-                             "diversity_contribute", "rank_total")] 
-rownames(rank_mtx) <- saving_info$Species
+# Compute within-group ranks for long_ranks
+saving_info_candidate <- saving_info %>%
+  filter(is_candidate) %>%
+  mutate(across(c(rank_abundance, stability_degree, rank_degree,
+                  stability_closeness, rank_satbility, diversity_contribute),
+                ~ rank(.x), .names = "{.col}_grprank"))
 
-long_ranks <- reshape2::melt(saving_info[ , c("Species", "rank_abundance",
-                                             "stability_degree", "rank_degree",
-                                             "stability_closeness", "rank_satbility",
-                                             "diversity_contribute")])
-long_total <- reshape2::melt(saving_info[ , c("Species", "rank_total")]) %>%
-  arrange(desc(value)) %>%
-  mutate(Species = factor(Species, level = Species))
+saving_info_noncandidate <- saving_info %>%
+  filter(!is_candidate) %>%
+  mutate(across(c(rank_abundance, stability_degree, rank_degree,
+                  stability_closeness, rank_satbility),
+                ~ rank(.x), .names = "{.col}_grprank"),
+         diversity_contribute_grprank = NA_real_)
 
-long_ranks$Species <- factor(long_ranks$Species, level = long_total$Species)
-colnames(long_ranks)[3] <- "Rank"
-pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 4, height = 3)
-ggplot(data = long_ranks, aes(x = variable, y = Species,col = Rank)) +
-  geom_point(size = 2) +
-  scale_color_distiller(palette = "Reds") +
+saving_info_ranked <- bind_rows(saving_info_candidate, saving_info_noncandidate)
+
+vars <- c("rank_abundance", "stability_degree", "rank_degree",
+          "stability_closeness", "rank_satbility", "diversity_contribute")
+grprank_vars <- paste0(vars, "_grprank")
+
+long_total <- reshape2::melt(saving_info_ranked[ , c("Species", "rank_total", "is_candidate")]) %>%
+  filter(variable == "rank_total") %>%
+  arrange(!is.na(value), desc(value)) %>%
+  {
+    candidates <- filter(., is_candidate) %>% arrange(desc(value))
+    non_candidates <- filter(., !is_candidate) %>% arrange(desc(value))
+    bind_rows(candidates, non_candidates)
+  } %>%
+  mutate(Species = factor(Species, levels = Species))
+
+# Define global species order
+candidate_levels <- long_total_plot %>%
+  filter(group == "candidate") %>%
+  arrange(bar_height) %>%
+  pull(Species) %>%
+  as.character()
+
+non_candidate_levels <- long_total_plot %>%
+  filter(group == "non-candidate") %>%
+  arrange(desc(bar_height)) %>%
+  pull(Species) %>%
+  as.character()
+
+species_levels <- c(non_candidate_levels, candidate_levels)
+
+long_total_plot <- long_total_plot %>%
+  mutate(Species = factor(Species, levels = species_levels))
+
+long_ranks <- long_ranks %>%
+  mutate(Species = factor(Species, levels = species_levels))
+
+pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 5, height = 5)
+ggplot(data = long_ranks, aes(x = variable, y = Species)) +
+  geom_point(data = subset(long_ranks, group == "non-candidate"),
+             aes(col = Rank), size = 2) +
+  scale_color_distiller(palette = "Greys", name = "Rank (non-candidate)") +
+  ggnewscale::new_scale_color() +
+  geom_point(data = subset(long_ranks, group == "candidate"),
+             aes(col = Rank), size = 2) +
+  scale_color_distiller(palette = "Reds", name = "Rank (candidate)") +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1),
         axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
 dev.off()
-colnames(long_total)[3] <- "Rank"
-pdf(file.path(DIR_RES, "D_core_sp_selection_p2.pdf"), width = 5, height = 3)
-ggplot(data = long_total, aes(y = rank(1/Rank), x = Species,
-                              fill = Rank)) +
-  geom_bar(stat = "identity") +
-  scale_fill_distiller(palette = "Reds") +
+
+pdf(file.path(DIR_RES, "D_core_sp_selection_p2.pdf"), width = 5, height = 5)
+ggplot(data = long_total_plot, aes(y = bar_height, x = Species)) +
+  geom_bar(data = subset(long_total_plot, group == "non-candidate"),
+           aes(fill = value), stat = "identity") +
+  scale_fill_distiller(palette = "Greys", name = "Rank (non-candidate)") +
+  ggnewscale::new_scale_fill() +
+  geom_bar(data = subset(long_total_plot, group == "candidate"),
+           aes(fill = value), stat = "identity") +
+  scale_fill_distiller(palette = "Reds", name = "Rank (candidate)") +
   coord_flip() +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
