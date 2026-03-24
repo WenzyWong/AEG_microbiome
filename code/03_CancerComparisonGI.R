@@ -320,7 +320,7 @@ colAbund <- c(paletteer_d("khroma::discreterainbow")[c(10, 12:20,
 
 long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
 
-pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_point8.pdf"),
+pdf(file.path(DIR_RES, "G_aeg_distribution_genera_above_top20.pdf"),
     width = 6, height = 4.75)
 ggplot(data = long_distribution, aes(x = variable, y = value, 
                                      alluvium = factor(Genus, levels = unique(Genus)))) +
