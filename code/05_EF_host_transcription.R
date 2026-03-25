@@ -147,6 +147,32 @@ pdf(file.path(DIR_RES, "E_gsea_ridge_kegg.pdf"), width = 12, height = 7)
 ridgeplot(gsea_kegg)
 dev.off()
 
+# Separate core enrichment genes by source and direction
+neg_hallmark <- c("TNF_SIGNALING_VIA_NFKB", 
+                  "IL6_JAK_STAT3_SIGNALING",
+                  "INFLAMMATORY_RESPONSE", 
+                  "EPITHELIAL_MESENCHYMAL_TRANSITION")
+
+pos_kegg <- c("DRUG_METABOLISM_OTHER_ENZYMES", 
+              "RETINOL_METABOLISM")
+
+get_core_genes <- function(gsea_obj, ids) {
+  strsplit(gsea_obj@result$core_enrichment[gsea_obj@result$ID %in% ids], 
+           "/") %>% unlist()
+}
+
+genes_neg_hallmark <- get_core_genes(gsea_hallmark, neg_hallmark)
+genes_pos_kegg     <- get_core_genes(gsea_kegg, pos_kegg)
+
+de_highlight <- de_df %>%
+  filter(change != "NS") %>%
+  mutate(highlight = case_when(
+    symbol %in% genes_neg_hallmark & symbol %in% genes_pos_kegg ~ "both",
+    symbol %in% genes_neg_hallmark ~ "hallmark_neg",
+    symbol %in% genes_pos_kegg    ~ "hallmark_pos",  # kegg positive
+    TRUE ~ "none"
+  ))
+
 # Matching genes in enriched terms
 name_highlight <- c(strsplit(gsea_hallmark@result$core_enrichment
                            [gsea_hallmark@result$ID %in% draw_hallmark],
@@ -157,16 +183,24 @@ name_highlight <- c(strsplit(gsea_hallmark@result$core_enrichment
 de_highlight <- de_df %>%
   filter(symbol %in% name_highlight & change != "NS") %>%
   arrange(desc(abs(log2FC)))
+de_highlight_pos <- de_df %>%
+  filter(symbol %in% name_highlight & change == "Up") %>%
+  arrange(desc(abs(log2FC)))
+de_highlight_neg <- de_df %>%
+  filter(symbol %in% name_highlight & change == "Dn") %>%
+  arrange(desc(abs(log2FC)))
 
 pdf(file.path(DIR_RES, "F_deg_volc_pathway_highlighted.pdf"), width = 3.5, height = 3.2)
 ggplot(draw_de, aes(x = log2FC, y = -log10(p.adj), colour = change)) + 
   ggtitle("EF-high vs EF-low") + 
-  geom_point(size = 1, alpha = .8) + 
+  geom_point(size = 1, alpha = .2) + 
   xlim(-5, 5) +
   scale_color_manual(values = c("#126CAA", "grey", "#9A342C")) +
-  geom_point(de_highlight, mapping = aes(x = log2FC, y = -log10(p.adj)),
-            color = "#FFB900FF", size = 3) + 
-  ggrepel::geom_label_repel(data = de_highlight[1:5, ],
+  geom_point(de_highlight_pos, mapping = aes(x = log2FC, y = -log10(p.adj)),
+            color = "#9A342C", size = 2) + 
+  geom_point(de_highlight_neg, mapping = aes(x = log2FC, y = -log10(p.adj)),
+             color = "#126CAA", size = 2) + 
+  ggrepel::geom_label_repel(data = de_highlight[1:6, ],
                             aes(x = log2FC, y = -log10(p.adj), 
                                 label = symbol),
                             color="grey27",
