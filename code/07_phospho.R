@@ -216,16 +216,22 @@ slope_df <- as.data.frame(t(apply(mat_sig, 1, function(y) {
   c(slope = coef(fit)[2], pval = summary(fit)$coefficients[2, 4])
 })))
 
+quantile(abs(sig_discrete$estimate))
+log2or_cutoff <- 2
+
 slope_sig <- slope_df %>%
   filter(pval < 0.05) %>%
-  rownames_to_column("feature")
-colnames(slope_sig)[2] <- "slope"
+  rownames_to_column("feature") %>%
+  rename(slope = 2) %>%
+  inner_join(sig_discrete %>% select(feature, estimate, padj), by = "feature") %>%
+  filter(abs(estimate) > log2or_cutoff)
 
 ##############################
 # Case visualisation: top slope
+n_top <- 5
 top_features <- bind_rows(
-  slice_max(slope_sig, slope, n = n_top) %>% mutate(direction = "positive"),
-  slice_min(slope_sig, slope, n = n_top) %>% mutate(direction = "negative")
+  slice_max(slope_sig, slope, n = n_top, with_ties = FALSE) %>% mutate(direction = "positive"),
+  slice_min(slope_sig, slope, n = n_top, with_ties = FALSE) %>% mutate(direction = "negative")
 )
 
 plot_percent <- phos_detect %>%
@@ -242,12 +248,10 @@ summary_data <- plot_percent %>%
   mutate(fill_var = paste0(direction, "_", ef_quartile))
 
 annotation_data <- top_features %>%
-  left_join(sig_discrete %>% select(feature, estimate, padj), by = "feature") %>%
   mutate(label = paste0("log2OR = ", round(estimate, 2),
                         "\nslope = ",  round(slope, 4),
-                        "\np.adj = ",  format(padj, digits = 2, scientific = TRUE))) %>%
-  mutate(feature = factor(feature, levels = top_features$feature))
-
+                        "\np.adj = ",  format(padj, digits = 2, scientific = TRUE)),
+         feature = factor(feature, levels = top_features$feature))
 fill_colors <- c(
   setNames(brewer.pal(4, "Oranges"), paste0("positive_Q", 1:4)),
   setNames(brewer.pal(4, "Blues"),   paste0("negative_Q", 1:4))
