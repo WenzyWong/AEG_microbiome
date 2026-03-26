@@ -12,7 +12,8 @@ library(broom)
 library(purrr)
 library(circlize)
 library(ggplot2)
-library(factoextra)
+library(tidyverse)
+library(RColorBrewer)
 
 set.seed(42)
 
@@ -24,12 +25,9 @@ DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4/"
 ##########################
 # Preprocess original data
 phospho <- read.delim(file.path(DIR_TAB, "Phosphoproteomics_iBAQ103_log2quantile_normlization_impute.txt"))
-dim(phospho)
 
 id_match <- read.delim(file.path(DIR_TAB, "Phospho_IDs_Protein_Gene.txt"))
-dim(id_match)
 
-# Match IDs
 for (i in 1:nrow(phospho)) {
   pro_id <- strsplit(phospho$Phospho_site[i], "_")[[1]][1]
   gene_name <- id_match[id_match$Protein.accession == pro_id, "Gene.name"]
@@ -37,23 +35,18 @@ for (i in 1:nrow(phospho)) {
   phospho$Phospho_site[i] <- paste0(gene_name, "_", site)
 }
 phospho <- phospho[-grep("^_", phospho$Phospho_site), ]
-dim(phospho)
 
-# Pair file names
 colnames(phospho) <- sub("^([A-Z]+)(\\d{6})$", "\\10\\2", colnames(phospho))
 pair_file <- read.csv(file.path(DIR_TAB, "ms_sample_name_pairing.csv"))
 pair_file$InnerSample <- sub("^([A-Z]+)(\\d{6})$", "\\10\\2", pair_file$InnerSample)
 
 phospho <- phospho[ , c(TRUE, colnames(phospho)[-1] %in% pair_file$InnerSample)]
-dim(phospho)
-
 sample_map <- setNames(pair_file$ZipSample, pair_file$InnerSample)
 colnames(phospho)[-1] <- sample_map[colnames(phospho)[-1]]
 
 rm_dup <- c(which(phospho$Phospho_site == "TMPO_S184")[1],
             which(phospho$Phospho_site == "TMPO_S306")[1])
 phospho <- phospho[-rm_dup, ]
-dim(phospho)
 rownames(phospho) <- phospho$Phospho_site
 phospho <- phospho[ , -1]
 
@@ -66,27 +59,14 @@ phospho <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
 mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
 common_sample <- intersect(colnames(phospho), colnames(mtx_cpm))
 common_tumour <- common_sample[grep("C", common_sample)]
-length(common_tumour)
 
 phos_tumour <- phospho[ , common_tumour] %>%
   filter(rowMeans(.) != min(phospho))
 phos_tumour <- phos_tumour[!grepl("^-", rownames(phos_tumour)), ]
-dim(phos_tumour)
 
 abund_ef <- data.frame(
   sample = common_tumour,
   t(mtx_cpm["Enterococcus_faecalis", common_tumour] / 1e+4)
-)
-
-#cor_ef_phos <- psych::corr.test(abund_ef$Enterococcus_faecalis, t(as.matrix(phos_tumour)))
-#saveRDS(cor_ef_phos, file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
-cor_ef_phos <- readRDS(file.path(DIR_RDS, "Correlation_ef_phosphosites.rds"))
-
-cor_res <- data.frame(
-  point = colnames(cor_ef_phos$r),
-  r = as.numeric(cor_ef_phos$r),
-  p = as.numeric(cor_ef_phos$p),
-  padj = as.numeric(cor_ef_phos$p.adj)
 )
 
 phos_detect <- phos_tumour %>%
@@ -95,45 +75,33 @@ phos_detect <- phos_tumour %>%
   pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
   mutate(present = as.integer(intensity > 3.891872))
 
-# Logistic regression for detected/undetected signals
+######################
+# Logistic regression
 logistic_ori <- phos_detect %>%
   left_join(abund_ef, by = "sample") %>%
   group_by(feature) %>%
   nest() %>%
   mutate(
     n_present = map_int(data, ~sum(.$present)),
-    n_absent = map_int(data, ~sum(.$present == 0)),
+    n_absent  = map_int(data, ~sum(.$present == 0)),
     prop_present = n_present / (n_present + n_absent)
   ) %>%
-  # Between 10-90% detection
   filter(prop_present > 0.1, prop_present < 0.9) %>%
   mutate(
-    fit = map(data, ~glm(present ~ Enterococcus_faecalis, data = ., 
-                         family = binomial)),
+    fit = map(data, ~glm(present ~ Enterococcus_faecalis, data = ., family = binomial)),
     converged = map_lgl(fit, ~.$converged),
     tidied = map(fit, tidy)
   ) %>%
   filter(converged) %>%
   unnest(tidied) %>%
   filter(term == "Enterococcus_faecalis") %>%
-  mutate(
-    OR = exp(estimate)
-  ) %>%
-  select(feature, estimate, OR, p.value, n_present, n_absent)
+  mutate(OR = exp(estimate)) %>%
+  select(feature, estimate, std.error, OR, p.value, n_present, n_absent)
 
-logistic_res <- logistic_ori %>%
+sig_discrete <- logistic_ori %>%
   mutate(padj = p.adjust(p.value, method = "BH")) %>%
   filter(padj < 0.05)
-dim(logistic_res)
 
-#write.csv(logistic_res, file.path(DIR_TAB, "Phos_discrete_sites.csv"))
-logistic_res <- read.csv(file.path(DIR_TAB, "Phos_discrete_sites.csv"), row.names = 1)
-
-########################
-# Significance selection
-sig_discrete <- logistic_res %>%
-  filter(padj < 0.05)
-dim(sig_discrete)
 write.csv(sig_discrete, file.path(DIR_TAB, "Phospho_discrete_significance.csv"))
 
 # Landscape: all significant features
@@ -204,102 +172,110 @@ legend("topright",
 circos.clear()
 dev.off()
 
-#####################################
-# Selecting feature for visualisation
-# This might need adjustment based on later interests
-features_to_plot <- sig_discrete[abs(sig_discrete$estimate) > 4, ]
-features_to_plot <- features_to_plot[order(-features_to_plot$estimate), ]$feature
+##############################
+# Forest plot: top log2OR
+n_forest <- 20
+sig_discrete <- ungroup(sig_discrete)
+top_log2or <- bind_rows(
+  slice_max(sig_discrete, estimate, n = n_forest) %>% mutate(direction = "up"),
+  slice_min(sig_discrete, estimate, n = n_forest) %>% mutate(direction = "down")
+) %>%
+  mutate(ci_low  = estimate - 1.96 * std.error,
+         ci_high = estimate + 1.96 * std.error,
+         feature = reorder(feature, estimate))
+dim(top_log2or)
 
-plot_percent <- phos_detect %>%
-  filter(feature %in% features_to_plot) %>%
+pdf(file.path(DIR_FIG, "B_Forest_log2OR.pdf"), width = 5, height = 8)
+ggplot(top_log2or, aes(x = estimate, y = feature, color = direction)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high), height = 0.3) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(up = "tomato2", down = "steelblue3")) +
+  labs(x = "log2OR", y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none")
+dev.off()
+
+##############################
+# Slope analysis
+summary_sig <- phos_detect %>%
+  filter(feature %in% sig_discrete$feature) %>%
   left_join(abund_ef, by = "sample") %>%
-  mutate(ef_quartile = cut(Enterococcus_faecalis, 
+  mutate(ef_quartile = cut(Enterococcus_faecalis,
                            breaks = quantile(Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE),
-                           include.lowest = TRUE,
-                           labels = c("Q1", "Q2", "Q3", "Q4")))
-
-summary_data <- plot_percent %>%
+                           include.lowest = TRUE, labels = c("Q1","Q2","Q3","Q4"))) %>%
   group_by(feature, ef_quartile) %>%
   summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop")
 
-plot_percent$feature <- factor(plot_percent$feature, levels = features_to_plot)
-summary_data$feature <- factor(summary_data$feature, levels = features_to_plot)
+mat_sig <- summary_sig %>%
+  pivot_wider(names_from = ef_quartile, values_from = presence_pct) %>%
+  { m <- as.matrix(.[, c("Q1","Q2","Q3","Q4")]); rownames(m) <- .$feature; m }
 
-annotation_data <- sig_discrete[abs(sig_discrete$estimate) > 4, ] %>%
-  mutate(label = paste0("log2OR = ", round(estimate, 2), 
-                        "\np.adj = ", format(padj, 
-                                             digits = 2, scientific = TRUE))) %>%
-  select(feature, label)
+slope_df <- as.data.frame(t(apply(mat_sig, 1, function(y) {
+  fit <- lm(y ~ c(1,2,3,4))
+  c(slope = coef(fit)[2], pval = summary(fit)$coefficients[2, 4])
+})))
 
-annotation_data$feature <- factor(annotation_data$feature, levels = features_to_plot)
+slope_sig <- slope_df %>%
+  filter(pval < 0.05) %>%
+  rownames_to_column("feature")
+colnames(slope_sig)[2] <- "slope"
 
-pdf(file.path(DIR_FIG, "B_Points_top_phosphosites_ef.pdf"), width = 12, height = 9)
+##############################
+# Case visualisation: top slope
+top_features <- bind_rows(
+  slice_max(slope_sig, slope, n = n_top) %>% mutate(direction = "positive"),
+  slice_min(slope_sig, slope, n = n_top) %>% mutate(direction = "negative")
+)
+
+plot_percent <- phos_detect %>%
+  filter(feature %in% top_features$feature) %>%
+  left_join(abund_ef, by = "sample") %>%
+  mutate(ef_quartile = cut(Enterococcus_faecalis,
+                           breaks = quantile(Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE),
+                           include.lowest = TRUE, labels = c("Q1","Q2","Q3","Q4")))
+
+summary_data <- plot_percent %>%
+  group_by(feature, ef_quartile) %>%
+  summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop") %>%
+  left_join(top_features %>% select(feature, direction), by = "feature") %>%
+  mutate(fill_var = paste0(direction, "_", ef_quartile))
+
+annotation_data <- top_features %>%
+  left_join(sig_discrete %>% select(feature, estimate, padj), by = "feature") %>%
+  mutate(label = paste0("log2OR = ", round(estimate, 2),
+                        "\nslope = ",  round(slope, 4),
+                        "\np.adj = ",  format(padj, digits = 2, scientific = TRUE))) %>%
+  mutate(feature = factor(feature, levels = top_features$feature))
+
+fill_colors <- c(
+  setNames(brewer.pal(4, "Oranges"), paste0("positive_Q", 1:4)),
+  setNames(brewer.pal(4, "Blues"),   paste0("negative_Q", 1:4))
+)
+
+plot_percent$feature  <- factor(plot_percent$feature,  levels = top_features$feature)
+summary_data$feature  <- factor(summary_data$feature,  levels = top_features$feature)
+
+pdf(file.path(DIR_FIG, "C_Top_slope_features.pdf"), width = 10, height = 5)
 ggplot() +
-  geom_jitter(data = plot_percent, 
-              aes(x = ef_quartile, y = present), 
+  geom_jitter(data = plot_percent,
+              aes(x = ef_quartile, y = present),
               alpha = 0.3, color = "grey50", size = 1, height = 0.02, width = 0.1) +
-  geom_line(data = summary_data, 
-            aes(x = ef_quartile, y = presence_pct, group = feature), 
-            color = "blue", linewidth = 0.8) +
-  geom_point(data = summary_data, 
-             aes(x = ef_quartile, y = presence_pct, fill = ef_quartile), 
+  geom_line(data = summary_data,
+            aes(x = ef_quartile, y = presence_pct, group = feature),
+            color = "black", linewidth = 0.8) +
+  geom_point(data = summary_data,
+             aes(x = ef_quartile, y = presence_pct, fill = fill_var),
              color = "black", shape = 21, size = 4) +
   geom_text(data = annotation_data,
             aes(x = Inf, y = Inf, label = label),
             hjust = 1.05, vjust = 1.2, size = 3, lineheight = 0.8) +
-  scale_fill_brewer(palette = "Oranges") +
-  facet_wrap(~ feature, scales = "free_y") +
-  labs(x = "E.faecalis abundance (quartiles)",
-       y = "Presence") +
+  scale_fill_manual(values = fill_colors) +
+  facet_wrap(~ feature, scales = "free_y", nrow = 2) +
+  labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1),
-        strip.text = element_text(size = 10),
+        strip.text = element_text(size = 9),
         legend.position = "none")
-dev.off()
-
-############
-# Clustering
-features_sig <- sig_discrete$feature
-
-summary_sig <- phos_detect %>%
-  filter(feature %in% features_sig) %>%
-  left_join(abund_ef, by = "sample") %>%
-  mutate(ef_quartile = cut(Enterococcus_faecalis,
-                           breaks = quantile(Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE),
-                           include.lowest = TRUE,
-                           labels = c("Q1", "Q2", "Q3", "Q4"))) %>%
-  group_by(feature, ef_quartile) %>%
-  summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop")
-
-wide_sig <- summary_sig %>%
-  pivot_wider(names_from = ef_quartile, values_from = presence_pct)
-
-mat_sig <- as.matrix(wide_sig[, c("Q1", "Q2", "Q3", "Q4")])
-rownames(mat_sig) <- wide_sig$feature
-
-fviz_nbclust(mat_sig, kmeans, method = "silhouette", k.max = 8)
-
-k <- 5
-km_sig <- kmeans(mat_sig, centers = k, nstart = 50)
-
-wide_sig$cluster <- factor(km_sig$cluster)
-summary_sig_new <- summary_sig %>%
-  left_join(wide_sig %>% select(feature, cluster), by = "feature")
-
-plot_percent <- plot_percent %>%
-  left_join(wide_sig %>% select(feature, cluster), by = "feature")
-
-pdf(file.path(DIR_FIG, "C_Clusters.pdf"), height = 5, width = 6)
-ggplot(summary_sig_new, aes(x = ef_quartile, y = presence_pct, group = feature,
-                            col = cluster)) +
-  geom_line() +
-  geom_point(size = 2) +
-  scale_colour_manual(values = c("tomato4", "tomato2", "steelblue2",
-                                 "grey", "steelblue4")) +
-  facet_wrap(~ cluster, labeller = label_both) +
-  labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
-  theme_bw() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1))
 dev.off()
