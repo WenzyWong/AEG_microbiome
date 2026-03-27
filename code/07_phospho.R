@@ -21,6 +21,7 @@ setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
 DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4/"
+DIR_SUP <- "/data/yzwang/project/AEG_seiri/results/S4/"
 
 ##########################
 # Preprocess original data
@@ -75,7 +76,7 @@ phos_detect <- phos_tumour %>%
   pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
   mutate(present = as.integer(intensity > 3.891872))
 
-######################
+#####################
 # Logistic regression
 logistic_ori <- phos_detect %>%
   left_join(abund_ef, by = "sample") %>%
@@ -172,7 +173,7 @@ legend("topright",
 circos.clear()
 dev.off()
 
-##############################
+#########################
 # Forest plot: top log2OR
 n_forest <- 20
 sig_discrete <- ungroup(sig_discrete)
@@ -185,6 +186,8 @@ top_log2or <- bind_rows(
          feature = reorder(feature, estimate))
 dim(top_log2or)
 
+write.csv(top_log2or, file.path(DIR_TAB, "Phospho_top_sites_by_log2OR.csv"))
+
 pdf(file.path(DIR_FIG, "B_Forest_log2OR.pdf"), width = 5, height = 8)
 ggplot(top_log2or, aes(x = estimate, y = feature, color = direction)) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
@@ -196,7 +199,7 @@ ggplot(top_log2or, aes(x = estimate, y = feature, color = direction)) +
   theme(legend.position = "none")
 dev.off()
 
-##############################
+################
 # Slope analysis
 summary_sig <- phos_detect %>%
   filter(feature %in% sig_discrete$feature) %>%
@@ -220,19 +223,21 @@ quantile(abs(sig_discrete$estimate))
 log2or_cutoff <- 2
 
 slope_sig <- slope_df %>%
-  filter(pval < 0.05) %>%
+  filter(pval < 0.1) %>%
   rownames_to_column("feature") %>%
   rename(slope = 2) %>%
   inner_join(sig_discrete %>% select(feature, estimate, padj), by = "feature") %>%
   filter(abs(estimate) > log2or_cutoff)
+dim(slope_sig)
 
-##############################
+###############################
 # Case visualisation: top slope
-n_top <- 5
-top_features <- bind_rows(
-  slice_max(slope_sig, slope, n = n_top, with_ties = FALSE) %>% mutate(direction = "positive"),
-  slice_min(slope_sig, slope, n = n_top, with_ties = FALSE) %>% mutate(direction = "negative")
-)
+top_features <- top_log2or %>%
+  filter(feature %in% slope_sig$feature) %>%
+  left_join(slope_sig %>% select(feature, slope, pval), by = "feature") %>%
+  mutate(direction = ifelse(estimate > 0, "positive", "negative"))
+
+feat_order <- top_features$feature[order(top_features$estimate)]
 
 plot_percent <- phos_detect %>%
   filter(feature %in% top_features$feature) %>%
@@ -251,16 +256,23 @@ annotation_data <- top_features %>%
   mutate(label = paste0("log2OR = ", round(estimate, 2),
                         "\nslope = ",  round(slope, 4),
                         "\np.adj = ",  format(padj, digits = 2, scientific = TRUE)),
-         feature = factor(feature, levels = top_features$feature))
+         feature = factor(feature, levels = feat_order))
+
 fill_colors <- c(
   setNames(brewer.pal(4, "Oranges"), paste0("positive_Q", 1:4)),
   setNames(brewer.pal(4, "Blues"),   paste0("negative_Q", 1:4))
 )
 
-plot_percent$feature  <- factor(plot_percent$feature,  levels = top_features$feature)
-summary_data$feature  <- factor(summary_data$feature,  levels = top_features$feature)
+plot_percent$feature <- factor(plot_percent$feature, levels = feat_order)
+summary_data$feature <- factor(summary_data$feature, levels = feat_order)
 
-pdf(file.path(DIR_FIG, "C_Top_slope_features.pdf"), width = 10, height = 5)
+facet_wrap(~ feature, scales = "free_y", ncol = 5)
+n_features <- length(unique(plot_percent$feature))
+n_col <- 5
+
+n_row <- ceiling(n_features / n_col)
+
+pdf(file.path(DIR_SUP, "A_Top_slope_features.pdf"), width = n_col * 2, height = n_row * 2)
 ggplot() +
   geom_jitter(data = plot_percent,
               aes(x = ef_quartile, y = present),
@@ -275,7 +287,7 @@ ggplot() +
             aes(x = Inf, y = Inf, label = label),
             hjust = 1.05, vjust = 1.2, size = 3, lineheight = 0.8) +
   scale_fill_manual(values = fill_colors) +
-  facet_wrap(~ feature, scales = "free_y", nrow = 2) +
+  facet_wrap(~ feature, scales = "free_y", ncol = n_col) +
   labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
