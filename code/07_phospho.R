@@ -14,6 +14,7 @@ library(circlize)
 library(ggplot2)
 library(tidyverse)
 library(RColorBrewer)
+library(KSEAapp)
 
 set.seed(42)
 
@@ -294,4 +295,48 @@ ggplot() +
         axis.text = element_text(colour = 1),
         strip.text = element_text(size = 9),
         legend.position = "none")
+dev.off()
+
+#################
+# KSEA enrichment
+ksea_input <- logistic_ori %>%
+  ungroup() %>%
+  mutate(
+    Protein      = sub("_[STY]\\d+$", "", feature),
+    Gene         = Protein,
+    Peptide      = feature,
+    Residue.Both = sub("^[^_]+_", "", feature),
+    p            = p.value,
+    FC           = abs(OR)
+  ) %>%
+  select(Protein, Gene, Peptide, Residue.Both, p, FC) %>%
+  as.data.frame()
+
+ksea_scores <- KSEA.Scores(
+  KSData           = KSData,
+  PX               = ksea_input,
+  NetworKIN        = TRUE,
+  NetworKIN.cutoff = 5
+)
+
+ksea_plot <- ksea_scores %>%
+  filter(!is.na(p.value)) %>%
+  mutate(
+    sig = p.value < 0.05,
+    direction = ifelse(z.score > 0, "activated", "inhibited"),
+    Kinase = reorder(Kinase.Gene, z.score)
+  ) %>%
+  filter(sig)
+
+pdf(file.path(DIR_FIG, "C_KSEA_kinase_activity.pdf"), width = 4, height = 0.2 * nrow(ksea_plot) + 1)
+ggplot(ksea_plot, aes(x = z.score, y = Kinase, fill = direction)) +
+  geom_col() +
+  geom_vline(xintercept = 0, color = "grey30") +
+  scale_fill_manual(values = c(activated = "tomato2", inhibited = "steelblue3")) +
+  labs(x = "KSEA z-score", y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 9),
+        panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
 dev.off()
