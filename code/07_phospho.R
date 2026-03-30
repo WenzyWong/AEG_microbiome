@@ -470,6 +470,44 @@ ggplot(ksea_plot, aes(x = z.score, y = Kinase, fill = direction)) +
   )
 dev.off()
 
+# Ridge plot
+ksea_merged <- merge(
+  KSData[grepl("[a-z]", KSData$Source) & KSData$networkin_score >= 5, ],
+  ksea_input %>% rename(SUB_GENE = Gene, SUB_MOD_RSD = Residue.Both)
+)
+ksea_ridge <- ksea_merged %>%
+  left_join(ksea_input %>% rename(SUB_GENE = Gene, SUB_MOD_RSD = Residue.Both) %>%
+              mutate(log2FC = log2(abs(FC))) %>%
+              select(SUB_GENE, SUB_MOD_RSD, log2FC),
+            by = c("SUB_GENE", "SUB_MOD_RSD")) %>%
+  left_join(ksea_scores %>% select(Kinase.Gene, z.score, p.value),
+            by = c("GENE" = "Kinase.Gene")) %>%
+  filter(p.value < 0.05) %>%
+  mutate(
+    direction   = ifelse(z.score > 0, "activated", "inhibited"),
+    Kinase.Gene = reorder(GENE, z.score)
+  )
+
+pdf(file.path(DIR_FIG, "D_KSEA_ridge.pdf"), width = 6,
+    height = 0.5 * length(unique(ksea_ridge$Kinase.Gene)) + 2)
+ggplot(ksea_ridge, aes(x = log2FC, y = Kinase.Gene,
+                       fill = direction)) +
+  geom_density_ridges(alpha = 0.8, scale = 1.2,
+                      quantile_lines = TRUE, quantiles = 2,
+                      color = "white", linewidth = 0.3) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  scale_fill_manual(values = c(activated = "tomato2", inhibited = "steelblue3")) +
+  scale_x_continuous(limits = c(-8, 8), oob = scales::squish) +
+  labs(x = "FC (OR)", y = NULL,
+       fill = "Kinase activity") +
+  theme_bw() +
+  theme(
+    axis.text.y     = element_text(size = 9),
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+dev.off()
+
 ####################
 # Clinical relavance
 clinical <-
