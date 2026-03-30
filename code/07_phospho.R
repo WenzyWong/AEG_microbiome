@@ -15,7 +15,9 @@ library(ggplot2)
 library(tidyverse)
 library(RColorBrewer)
 library(KSEAapp)
+library(ggridges)
 library(ComplexHeatmap)
+library(patchwork)
 
 set.seed(42)
 
@@ -355,13 +357,9 @@ summary_data <- plot_percent %>%
 
 annotation_data <- top_features %>%
   mutate(
-    label = paste0(
-      "log2OR = ",
-      round(estimate, 2),
-      "\nslope = ",
-      round(slope, 4),
-      "\np.adj = ",
-      format(padj, digits = 2, scientific = TRUE)
+    label = paste0("log2OR = ", round(estimate, 2),
+      "\nslope = ", round(slope, 4),
+      "\np.adj = ", format(padj, digits = 2, scientific = TRUE)
     ),
     feature = factor(feature, levels = feat_order)
   )
@@ -415,9 +413,9 @@ ggplot() +
   labs(x = "E.faecalis abundance (quartiles)", y = "Presence") +
   theme_minimal() +
   theme(
-    panel.border = element_rect(fill = NA, colour = 1),
-    axis.text = element_text(colour = 1),
-    strip.text = element_text(size = 9),
+    panel.border    = element_rect(fill = NA, colour = 1),
+    axis.text       = element_text(colour = 1),
+    strip.text      = element_text(size = 9),
     legend.position = "none"
   )
 dev.off()
@@ -641,4 +639,156 @@ Heatmap(cor_plot, name = "Spearman r",
   border               = TRUE,
   heatmap_legend_param = list(direction = "vertical")
 )
+dev.off()
+
+# Revise heatmap to blocks
+cor_t <- t(cor_plot)
+pval_t <- t(pval_plot)
+
+col_order <- sig_discrete %>%
+  filter(feature %in% rownames(cor_plot)) %>%
+  arrange(desc(estimate)) %>%
+  pull(feature) %>%
+  as.character()
+row_order <- colnames(cor_plot)
+
+# Clinical variable grouping
+var_group <- c(
+  Path_stage = "Stage", T_stage = "Stage", N_stage = "Stage", M_stage = "Stage",
+  Survival_month = "Survival", Status = "Survival",
+  Lauren = "Pathology", Differentiation = "Pathology", Histology = "Pathology",
+  Sex = "Demographics", Age = "Demographics",
+  Smoking = "Demographics", Alcohol = "Demographics"
+)
+
+group_colors <- c(Stage        = "#E8A838",
+                  Survival     = "#3CB371",
+                  Pathology    = "#9370DB",
+                  Demographics = "#4682B4")
+
+plot_df <- as.data.frame(cor_t) %>%
+  rownames_to_column("clinical_var") %>%
+  pivot_longer(-clinical_var, names_to = "feature", values_to = "r") %>%
+  left_join(
+    as.data.frame(pval_t) %>%
+      rownames_to_column("clinical_var") %>%
+      pivot_longer(-clinical_var, names_to = "feature", values_to = "pval"),
+    by = c("clinical_var", "feature")
+  ) %>%
+  mutate(
+    clinical_var = factor(clinical_var, levels = row_order),
+    feature      = factor(feature,      levels = col_order),
+    group        = var_group[clinical_var],
+    group        = factor(group, levels = c("Stage", "Survival", "Pathology", "Demographics")),
+    # point size scaled by -log10(p), capped for visual clarity
+    neg_log_p    = pmin(-log10(pval), 4),
+    sig          = pval < 0.05
+  )
+
+pgn_pal <- colorRampPalette(rev(brewer.pal(11, "PRGn")))(100)
+
+p_main <- ggplot(plot_df, aes(x = feature, y = clinical_var)) +
+  geom_point(aes(fill = r, size = neg_log_p),
+             shape = 22, color = "grey30", stroke = 0.2) +
+  scale_fill_gradientn(
+    colors = pgn_pal,
+    limits = c(-0.5, 0.5),
+    name   = "Spearman r"
+  ) +
+  scale_size_continuous(
+    range  = c(0.5, 6),
+    limits = c(0, 4),
+    breaks = c(-log10(0.05), -log10(0.01), -log10(0.001)),
+    labels = c("0.05", "0.01", "0.001"),
+    name   = "p value"
+  ) +
+  facet_grid(group ~ ., scales = "free_y", space = "free_y",
+             switch = "y") +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(
+    axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+    axis.text.y       = element_text(size = 8),
+    strip.text.y.left = element_text(angle = 0, size = 8, face = "bold"),
+    strip.placement   = "outside",
+    panel.spacing     = unit(2, "mm"),
+    panel.grid        = element_blank(),
+    legend.position   = "right"
+  )
+
+# log2OR annotation
+log2or_df <- sig_discrete %>%
+  filter(feature %in% col_order) %>%
+  select(feature, estimate) %>%
+  mutate(feature = factor(feature, levels = col_order))
+p_anno <- ggplot(log2or_df, aes(x = feature, y = 1, fill = estimate)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  scale_fill_gradientn(
+    colors = rev(brewer.pal(11, "RdBu"))[c(2, 6, 10)],
+    limits = c(-max(abs(log2or_df$estimate)), max(abs(log2or_df$estimate))),
+    name   = "log2OR"
+  ) +
+  scale_x_discrete(limits = col_order) +
+  labs(x = NULL, y = "log2OR") +
+  theme_bw() +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid   = element_blank(),
+    legend.position = "right",
+    plot.margin  = margin(0, 0, 0, 0)
+  )
+
+# calculate presence proportion in Q1 and Q4 for each feature
+ef_breaks <- quantile(abund_ef$Enterococcus_faecalis, probs = 0:4/4, na.rm = TRUE)
+
+presence_q <- phos_detect %>%
+  filter(feature %in% col_order) %>%
+  left_join(abund_ef, by = "sample") %>%
+  mutate(ef_quartile = cut(Enterococcus_faecalis,
+                           breaks = ef_breaks,
+                           include.lowest = TRUE,
+                           labels = c("Q1","Q2","Q3","Q4"))) %>%
+  filter(ef_quartile %in% c("Q1", "Q4")) %>%
+  group_by(feature, ef_quartile) %>%
+  summarise(presence_pct = mean(present, na.rm = TRUE), .groups = "drop") %>%
+  mutate(feature = factor(feature, levels = col_order))
+
+p_presence <- ggplot(presence_q, aes(x = feature, y = presence_pct,
+                                     color = ef_quartile)) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  scale_color_manual(values = c(Q1 = "steelblue3", Q4 = "tomato2"),
+                     name = "EF quartile") +
+  scale_x_discrete(limits = col_order) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1),
+                     labels = c("0", "0.5", "1")) +
+  labs(x = NULL, y = "Presence(%)") +
+  theme_bw() +
+  theme(
+    axis.text.x        = element_blank(),
+    axis.ticks.x       = element_blank(),
+    axis.text.y        = element_text(size = 7),
+    axis.title.y       = element_text(size = 11, angle = 90),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "right",
+    legend.key.size    = unit(3, "mm"),
+    legend.text        = element_text(size = 7),
+    plot.margin        = margin(0, 0, 0, 0)
+  )
+
+# Combine all three panels
+p_combined <- p_anno / p_presence / p_main +
+  plot_layout(heights = c(1, 3, 20), guides = "collect")
+p_combined
+
+n_features <- length(col_order)
+n_vars     <- length(row_order)
+
+pdf(file.path(DIR_FIG, "E_Clinical_correlation_heatmap.pdf"),
+    width  = n_features * 0.18 + 2,
+    height = n_vars     * 0.35 + 2)
+print(p_combined)
 dev.off()
