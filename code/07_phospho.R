@@ -848,3 +848,87 @@ pdf(file.path(DIR_FIG, "D_Clinical_correlation_heatmap.pdf"),
 p_anno / p_presence / p_main +
   plot_layout(heights = c(1, 3, 20), guides = "collect")
 dev.off()
+
+###############################################################
+# Amino acid preference analysis for EF-correlated phosphosites
+extract_aa <- function(site) {
+  sub(".*_([STY])\\d+$", "\\1", site)
+}
+aa_levels <- c("S", "T", "Y")
+
+# BG: ll detected features
+bg_aa <- data.frame(
+  feature = rownames(phos_tumour),
+  aa = extract_aa(rownames(phos_tumour))
+) %>%
+  filter(aa %in% aa_levels) %>%
+  count(aa, name = "n_bg") %>%
+  mutate(pct_bg = n_bg / sum(n_bg))
+
+# FG: significant sites, split by direction
+fg_aa <- sig_discrete %>%
+  mutate(
+    aa = extract_aa(feature),
+    direction = ifelse(estimate > 0, "EF-positive", "EF-negative")
+  ) %>%
+  filter(aa %in% aa_levels) %>%
+  group_by(direction, aa) %>%
+  summarise(n_fg = n(), .groups = "drop") %>%
+  group_by(direction) %>%
+  mutate(pct_fg = n_fg / sum(n_fg)) %>%
+  ungroup()
+
+chisq_res <- fg_aa %>%
+  group_by(direction) %>%
+  group_map(function(df, key) {
+    obs <- setNames(df$n_fg, df$aa)[aa_levels]
+    obs[is.na(obs)] <- 0
+    exp_prop <- bg_aa$pct_bg[match(aa_levels, bg_aa$aa)]
+    res <- chisq.test(obs, p = exp_prop)
+    tibble(direction = key$direction, statistic = res$statistic,
+           df = res$parameter, p.value = res$p.value)
+  }) %>%
+  bind_rows()
+
+std_residuals <- fg_aa %>%
+  group_by(direction) %>%
+  group_map(function(df, key) {
+    obs      <- setNames(df$n_fg, df$aa)[aa_levels]
+    obs[is.na(obs)] <- 0
+    exp_prop <- bg_aa$pct_bg[match(aa_levels, bg_aa$aa)]
+    res      <- chisq.test(obs, p = exp_prop)
+    tibble(direction = key$direction,
+           aa        = aa_levels,
+           observed  = obs,
+           expected  = res$expected,
+           std_resid = res$stdres)   # Pearson standardized residuals
+  }) %>%
+  bind_rows()
+std_residuals
+
+pdf(file.path(DIR_FIG, "E_AA_preference_stdresid.pdf"), width = 4.5, height = 3.5)
+std_residuals %>%
+  mutate(
+    aa        = factor(aa, levels = aa_levels),
+    direction = factor(direction, levels = c("EF-positive", "EF-negative")),
+    sig       = ifelse(abs(std_resid) > 2, "*", "")
+  ) %>%
+  ggplot(aes(x = aa, y = direction)) +
+  geom_point(aes(size = abs(std_resid), fill = std_resid),
+             shape = 21, color = "grey30", stroke = 0.3) +
+  geom_text(aes(label = sig), size = 5, vjust = 0.5, color = "black") +
+  scale_fill_gradientn(
+    colors = rev(brewer.pal(11, "RdBu"))[c(2, 6, 10)],
+    limits = c(-5, 5),
+    oob    = scales::squish,
+    name   = "Std. residual"
+  ) +
+  scale_size_continuous(range = c(3, 14), guide = "none") +
+  labs(x = "Phosphorylated amino acid", y = NULL) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(fill = NA, colour = 1),
+    axis.text    = element_text(colour = 1),
+    panel.grid   = element_blank()
+  )
+dev.off()
