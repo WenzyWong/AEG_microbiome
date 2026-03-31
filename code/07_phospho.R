@@ -442,70 +442,92 @@ ksea_scores <- KSEA.Scores(
   NetworKIN.cutoff = 5
 )
 
-ksea_plot <- ksea_scores %>%
-  filter(!is.na(p.value)) %>%
-  mutate(
-    sig       = p.value < 0.05,
-    direction = ifelse(z.score > 0, "activated", "inhibited"),
-    Kinase    = reorder(Kinase.Gene, z.score)
-  ) %>%
-  filter(sig)
+ksdata_filtered <- KSData[
+  grepl("[a-z]", KSData$Source) & KSData$networkin_score >= 5, ]
 
-pdf(
-  file.path(DIR_FIG, "C_KSEA_kinase_activity.pdf"),
-  width = 4,
-  height = 0.2 * nrow(ksea_plot) + 1
-)
-ggplot(ksea_plot, aes(x = z.score, y = Kinase, fill = direction)) +
+substrate_counts <- merge(
+  ksdata_filtered,
+  ksea_input %>% rename(SUB_GENE = Gene, SUB_MOD_RSD = Residue.Both)
+) %>%
+  group_by(GENE) %>%
+  summarise(n_substrates = n(), .groups = "drop")
+
+# Single source of truth: significant AND enough substrates
+valid_kinases <- ksea_scores %>%
+  filter(!is.na(p.value), p.value < 0.05) %>%
+  left_join(substrate_counts, by = c("Kinase.Gene" = "GENE")) %>%
+  filter(!is.na(n_substrates), n_substrates >= 3) %>%
+  mutate(
+    direction   = ifelse(z.score > 0, "activated", "inhibited"),
+    Kinase.Gene = reorder(Kinase.Gene, z.score)
+  )
+
+p_bar <- ggplot(valid_kinases,
+                aes(x = z.score, y = Kinase.Gene, fill = direction)) +
   geom_col() +
   geom_vline(xintercept = 0, color = "grey30") +
-  scale_fill_manual(values = c(activated = "tomato2",inhibited = "steelblue3")) +
+  scale_fill_manual(
+    values = c(activated = "tomato2", inhibited = "steelblue3")
+  ) +
   labs(x = "KSEA z-score", y = NULL) +
   theme_minimal() +
   theme(
-    legend.position = "none",
-    axis.text.y     = element_text(size = 9),
-    panel.border    = element_rect(fill = NA, colour = 1),
-    axis.text       = element_text(colour = 1)
+    legend.position  = "none",
+    axis.text.y      = element_text(size = 9),
+    panel.border     = element_rect(fill = NA, colour = 1),
+    axis.text        = element_text(colour = 1)
   )
-dev.off()
 
-# Ridge plot
-ksea_merged <- merge(
-  KSData[grepl("[a-z]", KSData$Source) & KSData$networkin_score >= 5, ],
+kinase_order <- levels(valid_kinases$Kinase.Gene)
+
+ksea_ridge <- merge(
+  ksdata_filtered,
   ksea_input %>% rename(SUB_GENE = Gene, SUB_MOD_RSD = Residue.Both)
-)
-ksea_ridge <- ksea_merged %>%
-  left_join(ksea_input %>% rename(SUB_GENE = Gene, SUB_MOD_RSD = Residue.Both) %>%
-              mutate(log2FC = log2(abs(FC))) %>%
-              select(SUB_GENE, SUB_MOD_RSD, log2FC),
-            by = c("SUB_GENE", "SUB_MOD_RSD")) %>%
-  left_join(ksea_scores %>% select(Kinase.Gene, z.score, p.value),
-            by = c("GENE" = "Kinase.Gene")) %>%
-  filter(p.value < 0.05) %>%
-  mutate(
-    direction   = ifelse(z.score > 0, "activated", "inhibited"),
-    Kinase.Gene = reorder(GENE, z.score)
-  )
+) %>%
+  filter(GENE %in% valid_kinases$Kinase.Gene) %>%
+  mutate(log2FC = log2(abs(FC))) %>%
+  left_join(
+    valid_kinases %>%
+      select(Kinase.Gene, z.score, direction) %>%
+      mutate(Kinase.Gene = as.character(Kinase.Gene)),
+    by = c("GENE" = "Kinase.Gene")
+  ) %>%
+  mutate(Kinase.Gene = factor(GENE, levels = kinase_order))
 
-pdf(file.path(DIR_FIG, "D_KSEA_ridge.pdf"), width = 6,
-    height = 0.5 * length(unique(ksea_ridge$Kinase.Gene)) + 2)
-ggplot(ksea_ridge, aes(x = log2FC, y = Kinase.Gene,
-                       fill = direction)) +
-  geom_density_ridges(alpha = 0.8, scale = 1.2,
-                      quantile_lines = TRUE, quantiles = 2,
-                      color = "white", linewidth = 0.3) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  scale_fill_manual(values = c(activated = "tomato2", inhibited = "steelblue3")) +
+p_ridge <- ggplot(ksea_ridge,
+                  aes(x = log2FC, y = Kinase.Gene, fill = direction)) +
+  geom_density_ridges(
+    alpha          = 0.8,
+    scale          = 1.2,
+    quantile_lines = TRUE,
+    quantiles      = 2,
+    color          = "white",
+    linewidth      = 0.3
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(
+    values = c(activated = "tomato2", inhibited = "steelblue3")
+  ) +
   scale_x_continuous(limits = c(-8, 8), oob = scales::squish) +
-  labs(x = "FC (OR)", y = NULL,
-       fill = "Kinase activity") +
+  labs(x = "log2FC", y = NULL, fill = "Kinase activity") +
   theme_bw() +
   theme(
-    axis.text.y     = element_text(size = 9),
-    legend.position = "right",
+    axis.text.y      = element_text(size = 9),
+    axis.text.y.left = element_blank(),
+    axis.ticks.y     = element_blank(),
+    legend.position  = "right",
     panel.grid.minor = element_blank()
   )
+
+n_kinases <- nrow(valid_kinases)
+pdf(
+  file.path(DIR_FIG, "C_KSEA_enrich.pdf"),
+  width  = 9,
+  height = 0.45 * n_kinases + 1.5
+)
+p_bar + p_ridge +
+  plot_layout(widths = c(1, 1.6), guides = "collect") &
+  theme(legend.position = "right")
 dev.off()
 
 ####################
@@ -818,15 +840,11 @@ p_presence <- ggplot(presence_q, aes(x = feature, y = presence_pct,
   )
 
 # Combine all three panels
-p_combined <- p_anno / p_presence / p_main +
-  plot_layout(heights = c(1, 3, 20), guides = "collect")
-p_combined
-
 n_features <- length(col_order)
 n_vars     <- length(row_order)
-
-pdf(file.path(DIR_FIG, "E_Clinical_correlation_heatmap.pdf"),
+pdf(file.path(DIR_FIG, "D_Clinical_correlation_heatmap.pdf"),
     width  = n_features * 0.18 + 2,
     height = n_vars     * 0.35 + 2)
-print(p_combined)
+p_anno / p_presence / p_main +
+  plot_layout(heights = c(1, 3, 20), guides = "collect")
 dev.off()
