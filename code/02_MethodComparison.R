@@ -17,7 +17,7 @@ setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TABLE <- "/data/yzwang/project/AEG_seiri/table_infos/"
 DIR_TOOL <- "/data/yzwang/functions/"
-DIR_RES <- "/data/yzwang/project/AEG_seiri/results/S1/"
+DIR_RES <- "/data/yzwang/project/AEG_seiri/results/SupF1_method_n_genus/"
 
 source(paste0(DIR_TOOL, "wilcox_diff.R"))
 

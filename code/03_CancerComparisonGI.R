@@ -21,7 +21,7 @@ library(dplyr)
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
-DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F1/"
+DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F1_cancer_types/"
 
 ##############
 # Data loading
