@@ -54,6 +54,7 @@ clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 # Circle plot of genus-species
 # Allocate positions for species
 gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
+length(gAbund[gAbund > 0.1])
 gAbund <- gAbund[1:20]
 indexSp <- c() # The species index in the cpm matrix, assigned to each genus
 for (g in names(gAbund)) {
