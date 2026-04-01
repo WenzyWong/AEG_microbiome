@@ -38,7 +38,7 @@ library(glmnet)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
-DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F2/"
+DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F2_species/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
 DIR_TOOL <- "/data/yzwang/git_project/AEG_microbiome/utils/"
 
@@ -770,26 +770,26 @@ coef_elnet <- coef_elnet %>%
 # Rank all parameters
 saving_normal <- saving_module %>%
   filter(Group == "Normal" & Species %in% coef_elnet$species) %>%
-  mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
+  mutate(degree_rank = rank(-igraph.degree, ties.method = "min"),
          rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
 saving_tumour <- saving_module %>%
   filter(Group == "Tumour" & Species %in% coef_elnet$species) %>%
-  mutate(rank_degree = rank(-igraph.degree, ties.method = "min"),
+  mutate(degree_rank = rank(-igraph.degree, ties.method = "min"),
          rank_closseness = rank(-igraph.closeness, ties.method = "min"))
 
 saving_info <- merge(
   saving_normal[, c("OTU", "Species", "abundance",
-                    "rank_degree", "rank_closseness")],
+                    "degree_rank", "rank_closseness")],
   saving_tumour[, c("OTU", "Species",
-                    "rank_degree", "rank_closseness")],
+                    "degree_rank", "rank_closseness")],
   by = c("OTU", "Species"),
   suffixes = c(".normal", ".tumour")
 ) %>%
-  mutate(stability_degree = rank(abs(rank_degree.normal - rank_degree.tumour)),
-         rank_degree = (rank(rank_degree.normal) + rank(rank_degree.tumour)) / 2,
-         stability_closeness = rank(abs(rank_closseness.normal - rank_closseness.tumour)),
-         rank_satbility = (rank(rank_closseness.normal) + rank(rank_closseness.tumour)) / 2)
+  mutate(degree_stability = rank(abs(degree_rank.normal - degree_rank.tumour)),
+         degree_rank = (rank(degree_rank.normal) + rank(degree_rank.tumour)) / 2,
+         closeness_stability = rank(abs(rank_closseness.normal - rank_closseness.tumour)),
+         closeness_rank = (rank(rank_closseness.normal) + rank(rank_closseness.tumour)) / 2)
 
 saving_info <- saving_info %>%
   filter(Species %in% coef_elnet$species) %>%
@@ -801,8 +801,8 @@ saving_info <- saving_info %>%
   mutate(
     rank_score = ifelse(
       is_candidate,
-      sqrt(stability_degree * rank_degree) +
-        sqrt(stability_closeness * rank_satbility) +
+      sqrt(degree_stability * degree_rank) +
+        sqrt(closeness_stability * closeness_rank) +
         diversity_contribute + rank_abundance,
       NA_real_
     ),
@@ -817,21 +817,21 @@ saving_info <- saving_info %>%
 # Compute within-group ranks for long_ranks
 saving_info_candidate <- saving_info %>%
   filter(is_candidate) %>%
-  mutate(across(c(rank_abundance, stability_degree, rank_degree,
-                  stability_closeness, rank_satbility, diversity_contribute),
+  mutate(across(c(rank_abundance, degree_stability, degree_rank,
+                  closeness_stability, closeness_rank, diversity_contribute),
                 ~ rank(.x), .names = "{.col}_grprank"))
 
 saving_info_noncandidate <- saving_info %>%
   filter(!is_candidate) %>%
-  mutate(across(c(rank_abundance, stability_degree, rank_degree,
-                  stability_closeness, rank_satbility),
+  mutate(across(c(rank_abundance, degree_stability, degree_rank,
+                  closeness_stability, closeness_rank),
                 ~ rank(.x), .names = "{.col}_grprank"),
          diversity_contribute_grprank = NA_real_)
 
 saving_info_ranked <- bind_rows(saving_info_candidate, saving_info_noncandidate)
 
-vars <- c("rank_abundance", "stability_degree", "rank_degree",
-          "stability_closeness", "rank_satbility", "diversity_contribute")
+vars <- c("rank_abundance", "degree_stability", "degree_rank",
+          "closeness_stability", "closeness_rank", "diversity_contribute")
 grprank_vars <- paste0(vars, "_grprank")
 
 long_total <- reshape2::melt(saving_info_ranked[ , c("Species", "rank_total", "is_candidate")]) %>%
