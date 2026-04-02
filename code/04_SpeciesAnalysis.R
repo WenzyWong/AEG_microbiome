@@ -833,15 +833,23 @@ vars <- c("rank_abundance", "degree_stability", "degree_rank",
           "closeness_stability", "closeness_rank", "diversity_contribute")
 grprank_vars <- paste0(vars, "_grprank")
 
-long_total <- reshape2::melt(saving_info_ranked[ , c("Species", "rank_total", "is_candidate")]) %>%
-  filter(variable == "rank_total") %>%
-  arrange(!is.na(value), desc(value)) %>%
-  {
-    candidates <- filter(., is_candidate) %>% arrange(desc(value))
-    non_candidates <- filter(., !is_candidate) %>% arrange(desc(value))
-    bind_rows(candidates, non_candidates)
-  } %>%
-  mutate(Species = factor(Species, levels = Species))
+long_total_plot <- bind_rows(
+  reshape2::melt(saving_info_ranked[saving_info_ranked$is_candidate, 
+                                    c("Species", "rank_total")]) %>%
+    mutate(group = "candidate"),
+  reshape2::melt(saving_info_ranked[!saving_info_ranked$is_candidate,
+                                    c("Species", "rank_abundance")]) %>%
+    rename(variable = variable) %>%
+    mutate(variable = "rank_total", group = "non-candidate")
+) %>%
+  mutate(
+    Species = factor(Species, levels = levels(long_total$Species)),
+    bar_height = ifelse(
+      group == "candidate",
+      rank(-value[group == "candidate"], na.last = FALSE)[match(value, value[group == "candidate"])],
+      rank(-value[group == "non-candidate"], na.last = FALSE)[match(value, value[group == "non-candidate"])]
+    )
+)
 
 # Define global species order
 candidate_levels <- long_total_plot %>%
@@ -861,6 +869,17 @@ species_levels <- c(non_candidate_levels, candidate_levels)
 long_total_plot <- long_total_plot %>%
   mutate(Species = factor(Species, levels = species_levels))
 
+long_ranks <- reshape2::melt(
+  saving_info_ranked[ , c("Species", "is_candidate", grprank_vars)],
+  id.vars = c("Species", "is_candidate")
+) %>%
+  mutate(
+    variable = factor(variable,
+                      levels = grprank_vars,
+                      labels = vars),
+    group = ifelse(is_candidate, "candidate", "non-candidate")
+  )
+colnames(long_ranks)[colnames(long_ranks) == "value"] <- "Rank"
 long_ranks <- long_ranks %>%
   mutate(Species = factor(Species, levels = species_levels))
 
