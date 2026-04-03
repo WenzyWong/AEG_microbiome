@@ -913,31 +913,70 @@ ggplot(data = long_total_plot, aes(y = bar_height, x = Species)) +
         axis.text = element_text(colour = 1))
 dev.off()
 
-# Correlation between EF and shannon index
-abund_ef <- mtx_cpm["Enterococcus_faecalis", names(shan_tumour)] / 1e+4
-all(colnames(abund_ef) == names(shan_tumour))
+write.csv(long_total_plot[ , c(1, 3, 4)], 
+          file.path(DIR_TAB, "Species_within_saving_module.csv"))
 
-cor_ef_shan <- psych::corr.test(t(abund_ef), shan_tumour)
+# Filter candidate species
+species_list <- long_total_plot[long_total_plot$group == "candidate", "Species"] %>%
+  droplevels(.) %>%
+  as.character()
 
-df_ef_shan <- data.frame(
-  row.names = names(shan_tumour),
-  t(abund_ef),
-  shannon = shan_tumour
-)
+shared_samples <- intersect(names(shan_tumour), colnames(mtx_cpm))
 
-pdf(file.path(DIR_RES, "E_cor_ef_shannon.pdf"), width = 3.3, height = 3.3)
-ggplot(df_ef_shan, aes(x = Enterococcus_faecalis, y = shannon)) +
-  geom_point(color = "tomato2", size = 1.5) +
-  geom_smooth(method = lm, color = "#00A087",
-              linewidth = 1.5, fill = "#4DBBD5") +
-  annotate("text", x = 1.7, y = 2.8, color = 1,
-           label = paste0("R = ", round(cor_ef_shan$r, 3),
-                          "\np = ", format.pval(cor_ef_shan$p.adj, 3))) +
-  xlab("E.faecalis abundance (%)") +
-  ylab("Shannon index") +
-  theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1),
-        legend.title = element_blank(),
-        legend.position = "bottom")
-dev.off()
+# Build per-species dataframes and correlation stats
+df_list   <- list()
+cor_stats <- list()
+
+for (sp in species_list) {
+  abund <- mtx_cpm[sp, shared_samples] / 1e+4
+  sub   <- data.frame(
+    abund   = as.numeric(abund),
+    shannon = shan_tumour[shared_samples]
+  )
+  df_list[[sp]] <- sub
+  
+  if (sd(sub$abund, na.rm = TRUE) == 0) {
+    cor_stats[[sp]] <- data.frame(species = sp, r = NA_real_, p = NA_real_)
+  } else {
+    ct <- cor.test(sub$abund, sub$shannon, method = "pearson")
+    cor_stats[[sp]] <- data.frame(
+      species = sp,
+      r       = round(ct$estimate, 3),
+      p       = ct$p.value
+    )
+  }
+}
+
+cor_stats_df <- do.call(rbind, cor_stats)
+cor_stats_df$p.adj <- p.adjust(cor_stats_df$p, method = "BH")
+
+# Plot one figure per species
+for (sp in species_list) {
+  sub  <- df_list[[sp]]
+  stat <- cor_stats_df[cor_stats_df$species == sp, ]
+  
+  if (!is.na(stat$r)) {
+    annot_label <- paste0("R = ", stat$r,
+                          "\np = ", format.pval(stat$p.adj, 3))
+    annot_x <- max(sub$abund)
+    annot_y <- max(sub$shannon)
+  }
+  
+  p <- ggplot(sub, aes(x = abund, y = shannon)) +
+    geom_point(color = "tomato2", size = 1.5) +
+    geom_smooth(method = lm, color = "#00A087",
+                linewidth = 1.5, fill = "#4DBBD5") +
+    { if (!is.na(stat$r))
+      annotate("text", x = annot_x, y = annot_y,
+               color = 1, hjust = 1, vjust = 1, size = 3,
+               label = annot_label)
+    } +
+    xlab(paste0(gsub("_", " ", sp), " abundance (%)")) +
+    ylab("Shannon index") +
+    theme_test() +
+    theme(panel.border = element_rect(fill = NA, colour = 1),
+          axis.text    = element_text(colour = 1))
+  pdf(file.path(DIR_RES, paste0("E_cor_shannon_", sp, ".pdf")), width = 3.3, height = 3.3)
+  print(p)
+  dev.off()
+}
