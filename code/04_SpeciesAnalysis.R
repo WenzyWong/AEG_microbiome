@@ -686,14 +686,13 @@ g <- graph_from_data_frame(
 )
 
 set.seed(42)
-layout <- create_layout(g, layout = 'fr')
 
 node_colours <- c(
   "Normal-enriched" = "#4393C3",
   "Tumour-enriched" = "#DF8F44",
   "Conserved"       = "#79AF97"
 )
-
+layout <- create_layout(g, layout = 'kk')
 pdf(file.path(DIR_RES, "C_net_module_revisualised.pdf"), width = 5, height = 4)
 ggraph(layout) +
   geom_edge_link(aes(linetype = edge_type), alpha = 0.5, colour = "grey", width = 0.3) +
