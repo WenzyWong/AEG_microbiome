@@ -696,7 +696,7 @@ pdf(file.path(DIR_RES, "C_net_module_revisualised.pdf"), width = 5, height = 4)
 ggraph(layout) +
   geom_edge_link(aes(linetype = edge_type), alpha = 0.5, colour = "grey", width = 0.3) +
   scale_edge_linetype_manual(values = c("within-model" = "solid", "cross-model" = "dashed")) +
-  geom_node_point(aes(colour = node_type), size = 2.5) +
+  geom_node_point(aes(colour = node_type), size = 1.5) +
   scale_colour_manual(values = node_colours, name = "Node type") +
   theme_void() +
   theme(legend.position = "right",
