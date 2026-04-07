@@ -1,6 +1,6 @@
 run_deseq_by_sp <- function(species_name, abund_df, count_mtx, target_sp_df,
-                                  log2fc_thresh = log2(1.5), padj_thresh = 0.05,
-                                  log2fc_cap = 5, log10p_cap = 5) {
+                            log2fc_thresh = log2(1.5), padj_thresh = 0.05,
+                            log2fc_cap = 5, log10p_cap = 5) {
   # Check if species exists in target_sp
   if (!species_name %in% target_sp_df$Species) {
     warning(paste("Species not found in target_sp:", species_name))
