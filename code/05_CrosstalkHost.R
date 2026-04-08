@@ -64,57 +64,84 @@ mtx_htpm_filter <- readRDS(file.path(DIR_RDS, "hTumourTPM_filtered.rds"))
 
 #######################
 # Differential analysis
-tumour_samples <- colnames(mtx_hcount)[startsWith(colnames(mtx_hcount), "C")]
-
 source(file.path(DIR_TOOL, "run_deseq_by_sp.R"))
-target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"),
-                      row.names = 1)
-
-
-abund_target <- data.frame(
-  sample = tumour_samples,
-  t(mtx_cpm[target_sp$Species, tumour_samples] / 1e+4)
-)
-
-all_de_results <- lapply(
-  target_sp$Species,
-  run_deseq_by_sp,
-  abund_df     = abund_target,
-  count_mtx    = mtx_hcount[, tumour_samples],
-  target_sp_df = target_sp
-)
-
-names(all_de_results) <- target_sp$Species
-
-all_de_results <- Filter(Negate(is.null), all_de_results)
-
-###############
-# GSEA analysis
 source(file.path(DIR_TOOL, "run_gsea_by_species.R"))
 source(file.path(DIR_TOOL, "extract_ranking_df.R"))
 source(file.path(DIR_TOOL, "draw_summary_ridgeplot.R"))
-
-all_gsea_results <- lapply(
-  names(all_de_results),
-  run_gsea_by_species,
-  de_results = all_de_results,
-  dir_rds    = DIR_RDS
-)
-names(all_gsea_results) <- names(all_de_results)
-
-for (gene_set in c("hallmark", "kegg")) {
-  pdf(file.path(DIR_RES, paste0("summary_gsea_ridge_", gene_set, ".pdf")),
-      width = 12, height = length(all_gsea_results) * 0.8)
-  print(draw_summary_ridgeplot(all_gsea_results, gene_set))
-  dev.off()
-}
-
-# Dot plot
 source(file.path(DIR_TOOL, "draw_gsea_dotplot.R"))
-for (gene_set in c("hallmark", "kegg")) {
-  pdf(file.path(DIR_RES, paste0("summary_gsea_dot_", gene_set, ".pdf")),
-      width = 8, height = length(all_gsea_results))
-  print(draw_gsea_dotplot(all_gsea_results, gene_set))
-  dev.off()
+
+target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"),
+                      row.names = 1)
+
+sample_groups <- list(
+  tumour = colnames(mtx_hcount)[startsWith(colnames(mtx_hcount), "C")],
+  normal = colnames(mtx_hcount)[!startsWith(colnames(mtx_hcount), "C")]
+)
+
+for (grp in names(sample_groups)) {
+  samples <- sample_groups[[grp]]
+  dir_rds_grp <- file.path(DIR_RDS, grp)
+  dir_res_grp <- file.path(DIR_RES, grp)
+  dir.create(dir_rds_grp, showWarnings = FALSE)
+  dir.create(dir_res_grp, showWarnings = FALSE)
+  
+  # DE analysis
+  abund_target <- data.frame(
+    sample = samples,
+    t(mtx_cpm[target_sp$Species, samples] / 1e+4)
+  )
+  
+  all_de_results <- lapply(
+    target_sp$Species,
+    run_deseq_by_sp,
+    abund_df     = abund_target,
+    count_mtx    = mtx_hcount[, samples],
+    target_sp_df = target_sp
+  )
+  names(all_de_results) <- target_sp$Species
+  all_de_results <- Filter(Negate(is.null), all_de_results)
+  
+  # GSEA analysis
+  all_gsea_results <- lapply(
+    names(all_de_results),
+    run_gsea_by_species,
+    de_results = all_de_results,
+    dir_rds    = dir_rds_grp
+  )
+  names(all_gsea_results) <- names(all_de_results)
+  
+  # Plots
+  for (gene_set in c("hallmark", "kegg")) {
+    pdf(file.path(dir_res_grp, paste0("summary_gsea_ridge_", gene_set, ".pdf")),
+        width = 12, height = length(all_gsea_results) * 0.8)
+    print(draw_summary_ridgeplot(all_gsea_results, gene_set))
+    dev.off()
+    
+    pdf(file.path(dir_res_grp, paste0("summary_gsea_dot_", gene_set, ".pdf")),
+        width = 8, height = length(all_gsea_results))
+    print(draw_gsea_dotplot(all_gsea_results, gene_set))
+    dev.off()
+  }
+  
+  # Save results
+  saveRDS(all_de_results,   file.path(dir_rds_grp, "all_de_results.rds"))
+  saveRDS(all_gsea_results, file.path(dir_rds_grp, "all_gsea_results.rds"))
 }
 
+gsea_tumour <- readRDS(file.path(DIR_RDS, "tumour", "all_gsea_results.rds"))
+gsea_normal <- readRDS(file.path(DIR_RDS, "normal", "all_gsea_results.rds"))
+
+n_sp    <- max(length(gsea_tumour), length(gsea_normal))
+n_paths <- length(unique(collect_gsea_df(
+  c(gsea_tumour, gsea_normal), "hallmark")$ID))
+
+for (gene_set in c("hallmark", "kegg")) {
+  n_paths <- length(unique(collect_gsea_df(
+    c(gsea_tumour, gsea_normal), gene_set)$ID))
+  
+  pdf(file.path(DIR_RES, paste0("compare_gsea_dot_", gene_set, ".pdf")),
+      width  = n_sp * 0.6 + 4,
+      height = n_paths * 0.3)
+  print(draw_gsea_dotplot(gsea_tumour, gsea_normal, gene_set = gene_set))
+  dev.off()
+}
