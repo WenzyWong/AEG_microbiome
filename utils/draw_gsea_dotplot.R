@@ -77,7 +77,8 @@ draw_gsea_dotplot <- function(gsea_list, gene_set = c("hallmark", "kegg"),
          title = paste("GSEA Dotplot -", toupper(gene_set))) +
     theme_bw(base_size = 10) +
     theme(
-      axis.text.x      = element_text(angle = 90, hjust = 1, vjust = .5),
+      axis.text.x      = element_text(color = 1, angle = 90, hjust = 1, vjust = .5),
+      axis.text.y      = element_text(color = 1),
       panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
       plot.title       = element_text(face = "bold", size = 12, hjust = 0.5),
       legend.position  = "right"

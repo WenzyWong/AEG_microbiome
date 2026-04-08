@@ -102,13 +102,19 @@ all_gsea_results <- lapply(
 )
 names(all_gsea_results) <- names(all_de_results)
 
-# Save summary ridgeplots
-fig_w <- 15
-fig_h <- max(6, length(all_gsea_results) * 2.5)
-
 for (gene_set in c("hallmark", "kegg")) {
   pdf(file.path(DIR_RES, paste0("summary_gsea_ridge_", gene_set, ".pdf")),
-      width = fig_w, height = fig_h)
+      width = 12, height = length(all_gsea_results) * 0.8)
   print(draw_summary_ridgeplot(all_gsea_results, gene_set))
   dev.off()
 }
+
+# Dot plot
+source(file.path(DIR_TOOL, "draw_gsea_dotplot.R"))
+for (gene_set in c("hallmark", "kegg")) {
+  pdf(file.path(DIR_RES, paste0("summary_gsea_dot_", gene_set, ".pdf")),
+      width = 8, height = length(all_gsea_results))
+  print(draw_gsea_dotplot(all_gsea_results, gene_set))
+  dev.off()
+}
+
