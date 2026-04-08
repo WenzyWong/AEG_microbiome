@@ -13,7 +13,7 @@ draw_summary_ridgeplot <- function(gsea_list, gene_set = c("hallmark", "kegg"),
     mutate(mean_stat = mean(stat, na.rm = TRUE)) %>%
     ungroup()
   
-  species_vec <- sort(unique(df$species))
+  species_vec <- unique(df$species)
   if (is.null(fill_colors)) {
     base_cols   <- as.character(paletteer_d("ggsci::default_jama"))
     fill_colors <- setNames(colorRampPalette(base_cols)(length(species_vec)), species_vec)
@@ -31,6 +31,7 @@ draw_summary_ridgeplot <- function(gsea_list, gene_set = c("hallmark", "kegg"),
                                     color = "white", linewidth = 0.3) +
       scale_fill_manual(values = fill_colors) +
       scale_x_continuous(limits = c(-stat_cap, stat_cap), name = NULL) +
+      scale_y_discrete(labels = tolower) +
       labs(y = NULL, title = sp) +
       theme_bw(base_size = 9) +
       theme(plot.title         = element_text(face = "bold", size = 8, hjust = 0.5),
