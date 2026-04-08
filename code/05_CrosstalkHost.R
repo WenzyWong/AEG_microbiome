@@ -145,3 +145,15 @@ for (gene_set in c("hallmark", "kegg")) {
   print(draw_gsea_dotplot(gsea_tumour, gsea_normal, gene_set = gene_set))
   dev.off()
 }
+
+##################
+# Human proteomics
+mtx_hpro <- readxl::read_excel(file.path(DIR_TAB, "SupData13ProteinIntensity.xlsx"))
+
+sample_pre <- colnames(mtx_hpro)[3:ncol(mtx_hpro)]
+sample_pre <- gsub("AEG", "", sample_pre) %>%
+  gsub("_T$", "", .) %>%
+  gsub("_N$", "", .) %>%
+  { ifelse(grepl("_T$", colnames(mtx_hpro)[3:ncol(mtx_hpro)]), paste0("C", .), paste0("N", .)) }
+
+colnames(mtx_hpro)[3:ncol(mtx_hpro)] <- sample_pre
