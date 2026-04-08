@@ -71,13 +71,13 @@ draw_gsea_dotplot <- function(gsea_list, gene_set = c("hallmark", "kegg"),
     ) +
     scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.2),
                        guide  = "none") +
-    scale_x_discrete(position = "top") +
+    scale_x_discrete(position = "bottom") +
+    scale_y_discrete(labels = tolower) +
     labs(x = NULL, y = NULL,
          title = paste("GSEA Dotplot -", toupper(gene_set))) +
     theme_bw(base_size = 10) +
     theme(
-      axis.text.x      = element_text(angle = 45, hjust = 0, size = 8),
-      axis.text.y      = element_text(size = 7),
+      axis.text.x      = element_text(angle = 90, hjust = 1, vjust = .5),
       panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
       plot.title       = element_text(face = "bold", size = 12, hjust = 0.5),
       legend.position  = "right"
