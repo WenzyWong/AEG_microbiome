@@ -15,6 +15,7 @@ library(DESeq2)
 library(enrichplot)
 library(paletteer)
 library(patchwork)
+library(compositions)
 
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F3_crosstalk/"
@@ -61,6 +62,25 @@ dim(mtx_cpm)
 
 mtx_hcount_filter <- readRDS(file.path(DIR_RDS, "hTumourCNT_filtered.rds"))
 mtx_htpm_filter <- readRDS(file.path(DIR_RDS, "hTumourTPM_filtered.rds"))
+
+# Human proteomics
+mtx_hpro <- readxl::read_excel(file.path(DIR_TAB, "SupData13ProteinIntensity.xlsx"))
+
+sample_pre <- colnames(mtx_hpro)[3:ncol(mtx_hpro)]
+sample_pre <- gsub("AEG", "", sample_pre) %>%
+  gsub("_T$", "", .) %>%
+  gsub("_N$", "", .) %>%
+  { ifelse(grepl("_T$", colnames(mtx_hpro)[3:ncol(mtx_hpro)]), paste0("C", .), paste0("N", .)) }
+
+colnames(mtx_hpro)[3:ncol(mtx_hpro)] <- sample_pre
+
+# Overlapping (tumour)
+samples_rna <- colnames(mtx_htpm_filter)[grep("C", colnames(mtx_htpm_filter))]
+samples_prot <- colnames(mtx_hpro)
+samples_bac <- colnames(mtx_cpm)
+
+samples_common <- Reduce(intersect, list(samples_rna, samples_prot, samples_bac))
+length(samples_common)
 
 #######################
 # Differential analysis
@@ -146,14 +166,71 @@ for (gene_set in c("hallmark", "kegg")) {
   dev.off()
 }
 
-##################
-# Human proteomics
-mtx_hpro <- readxl::read_excel(file.path(DIR_TAB, "SupData13ProteinIntensity.xlsx"))
+#############################################################
+# Wether clinical traits contribute to microbial distribution
+clinical_sub <- clinical %>%
+  mutate(`No.` = paste0("C", `No.`)) %>%
+  filter(No. %in% samples_common) %>%
+  mutate(
+    tumor_dims = str_extract_all(`Primary tumor size`, "[0-9.]+"),
+    tumor_max_dim = map_dbl(tumor_dims, ~ max(as.numeric(.))),
+    tumor_volume = map_dbl(tumor_dims, ~ prod(as.numeric(.))),
+    T_stage = str_extract(`TNM stage`, "T[0-9a-z]+"),
+    N_stage = str_extract(`TNM stage`, "N[0-9]+"),
+    M_stage = str_extract(`TNM stage`, "M[0-9]"),
+    stage_group = case_when(
+      `Pathological stage` %in% c("I", "IA", "IB", "II", "IIA", "IIB") ~ "Early",
+      `Pathological stage` %in% c("III", "IIIA", "IIIB", "IIIC", "IV")  ~ "Late",
+      TRUE ~ NA_character_)
+  )
+dim(clinical_sub)
 
-sample_pre <- colnames(mtx_hpro)[3:ncol(mtx_hpro)]
-sample_pre <- gsub("AEG", "", sample_pre) %>%
-  gsub("_T$", "", .) %>%
-  gsub("_N$", "", .) %>%
-  { ifelse(grepl("_T$", colnames(mtx_hpro)[3:ncol(mtx_hpro)]), paste0("C", .), paste0("N", .)) }
+# Keep taxa present in at least 20% of samples with CPM > 1
+min_samples <- ceiling(0.2 * length(samples_common))
+keep <- rowSums(mtx_cpm[, samples_common] > 1) >= min_samples
+mtx_cpm_filt <- mtx_cpm[keep, samples_common]
 
-colnames(mtx_hpro)[3:ncol(mtx_hpro)] <- sample_pre
+mtx_clr <- t(clr(t(mtx_cpm_filt + 0.5)))
+
+pca_res <- prcomp(t(mtx_clr), scale. = FALSE)
+pca_df <- as.data.frame(pca_res$x[, 1:3]) %>%
+  tibble::rownames_to_column("No.") %>%
+  left_join(clinical_sub, by = "No.")
+
+# Example: color by TNM stage
+ggplot(pca_df, aes(PC1, PC2, color = `TNM stage`)) +
+  geom_point(size = 3) +
+  theme_bw()
+
+dist_aitchison <- dist(t(mtx_clr))
+
+meta_permanova <- clinical_sub %>%
+  mutate(Age_group = if_else(Age >= median(Age, na.rm = TRUE), "High", "Low")) %>%
+  select(
+    No.,
+    Age_group,
+    Sex,
+    Smoking,
+    Alcohol,
+    `Siewert type`,
+    `Borrmann classification`,
+    `Lauren Classification`,
+    stage_group,
+    N_stage,
+    M_stage,
+    tumor_max_dim
+  ) %>%
+  column_to_rownames("No.") %>%
+  drop_na()
+
+samples_permanova <- rownames(meta_permanova)
+dist_sub <- as.dist(as.matrix(dist_aitchison)[samples_permanova, samples_permanova])
+
+adonis2(
+  dist_sub ~ stage_group + `Lauren Classification` + `Borrmann classification` +
+    `Siewert type` + N_stage + M_stage +
+    tumor_max_dim + Age_group + Sex + Smoking + Alcohol,
+  data = meta_permanova,
+  permutations = 999,
+  by = "margin"
+) # Residue 78.5%, modest contribution
