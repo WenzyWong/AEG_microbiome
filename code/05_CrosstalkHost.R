@@ -216,13 +216,13 @@ circos.track(
       ytop   = max_pct,
       col    = NA,
       border = border_col,
-      lwd    = ifelse(g %in% top5_genera, 1.2, 0.6)
+      lwd    = ifelse(g %in% top5_genera, 2.5, 1)
     )
     
     circos.segments(0.5, 0, 0.5, row$pct, lwd = 2.2, col = genus_colors[g])
     if (row$pct > 0)
       circos.points(0.5, row$pct, pch = 16,
-                    cex = 0.9 + row$pct / max_pct * 1.1, col = genus_colors[g])
+                    cex = 1.5 + row$pct / max_pct * 1.1, col = genus_colors[g])
     circos.text(0.5, row$pct,
                 labels = sprintf("%.1f%%\n(n=%d)", row$pct, row$count),
                 adj = c(0.5, -0.3), cex = 0.45,
@@ -258,25 +258,25 @@ circos.track(
                 col    = abund_col_fun(val),
                 border = NA)
     circos.text(0.5, 0.5,
-                labels     = formatC(mean_abund[g] * 100, format = "f", digits = 2),
+                labels     = formatC(mean_abund[g], format = "f", digits = 2),
                 adj        = c(0.5, 0.5),
                 cex        = 0.38,
                 niceFacing = TRUE,
                 facing     = "clockwise",
-                col        = ifelse(val > 0.6, "white", "grey30"))
+                col        = ifelse(val > 0.6, "white", "black"))
   }
 )
 
 # Abundance track y-axis label
 circos.text(
-  x                = 0.5,
-  y                = 0.5,
+  x                = 0,
+  y                = 0,
   labels           = "Abund.\n(%)",
   sector.index     = genera[1],
   track.index      = 3,
   facing           = "bending.inside",
   cex              = 0.4,
-  col              = "grey40"
+  col              = "black"
 )
 
 legend("center",
