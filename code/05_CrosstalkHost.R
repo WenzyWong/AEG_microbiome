@@ -127,41 +127,6 @@ for (g in seq_len(nrow(mtx_clr))) {
 saveRDS(prot_cor_mat, file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
 
 #######################
-# Dual heatmap
-rna_cor_mat  <- readRDS(file.path(DIR_RDS, "rna_genus_gene_cor.rds"))
-prot_cor_mat <- readRDS(file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
-
-gene_var  <- apply(rna_cor_mat, 2, var, na.rm = TRUE)
-top_genes <- names(sort(gene_var, decreasing = TRUE))[1:200]
-
-gene_name_map  <- setNames(mtx_hpro$Gene_names, rownames(mtx_hpro))
-prot_vis       <- prot_cor_mat
-colnames(prot_vis) <- ifelse(!is.na(gene_name_map[colnames(prot_vis)]),
-                             gene_name_map[colnames(prot_vis)], colnames(prot_vis))
-
-cor_col_fun <- colorRamp2(c(-0.6, -0.3, 0, 0.3, 0.6),
-                          c("#313695","#74add1","white","#f46d43","#a50026"))
-
-pdf(file.path(DIR_RES, "Heatmap_genus_RNA_protein_correlation.pdf"), width = 16, height = 6)
-draw(
-  Heatmap(pmax(pmin(rna_cor_mat[, top_genes], 0.6), -0.6),
-          name = "RNA\nSpearman r", col = cor_col_fun,
-          cluster_rows = TRUE, cluster_columns = TRUE,
-          show_row_names = TRUE, show_column_names = FALSE,
-          row_names_gp = gpar(fontsize = 8),
-          column_title = "Genus - Gene TPM correlation",
-          use_raster = TRUE, na_col = "grey90") +
-    Heatmap(pmax(pmin(prot_vis, 0.6), -0.6),
-            name = "Protein\nSpearman r", col = cor_col_fun,
-            cluster_rows = TRUE, cluster_columns = TRUE,
-            show_row_names = TRUE, show_column_names = FALSE,
-            row_names_gp = gpar(fontsize = 8),
-            column_title = "Genus - Protein Intensity correlation",
-            use_raster = TRUE, na_col = "grey90")
-)
-dev.off()
-
-#######################
 # Circos lollipop
 mean_abund <- rowMeans(mtx_cpm_filt[top20_genera, ] / 1e4)
 genus_colors <- setNames(
@@ -186,7 +151,7 @@ abund_scaled <- setNames(
   (mean_abund - min(mean_abund)) / (max(mean_abund) - min(mean_abund)),
   top20_genera
 )
-top5_genera <- overlap_df$genus[order(overlap_df$pct, decreasing = TRUE)][1:5]
+high_overlap_g <- overlap_df$genus[overlap_df$pct > 10]
 
 pdf(file.path(DIR_RES, "Circos_genus_overlap_lollipop.pdf"), width = 10, height = 10)
 circos.clear()
@@ -206,7 +171,7 @@ circos.track(
   panel.fun = function(x, y) {
     g        <- get.cell.meta.data("sector.index")
     row      <- overlap_df[overlap_df$genus == g, ]
-    border_col <- ifelse(g %in% top5_genera, "#c0392b", "grey85")
+    border_col <- ifelse(g %in% high_overlap_g, "#c0392b", "grey85")
     
     # Redraw background with per-sector border color
     circos.rect(
@@ -216,7 +181,7 @@ circos.track(
       ytop   = max_pct,
       col    = NA,
       border = border_col,
-      lwd    = ifelse(g %in% top5_genera, 2.5, 1)
+      lwd    = ifelse(g %in% high_overlap_g, 2.5, 1)
     )
     
     circos.segments(0.5, 0, 0.5, row$pct, lwd = 2.2, col = genus_colors[g])
@@ -290,3 +255,199 @@ title(main = expression("Overlap genes (|" * italic(r)[s] * "| \u2265 0.3, p < 0
 
 circos.clear()
 dev.off()
+
+#########
+# Heatmap
+# Species-level correlation
+mtx_cpm_sp <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
+
+target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"), row.names = 1)
+
+# Filter to target species present in common samples
+sp_in_data <- intersect(target_sp$Species, rownames(mtx_cpm_sp))
+mtx_cpm_sp_filt <- mtx_cpm_sp[sp_in_data, samples_common]
+
+mtx_clr_sp <- t(as.matrix(clr(t(mtx_cpm_sp_filt + 0.5))))
+
+# RNA correlation: species x gene
+rna_cor_sp <- do.call(cbind, lapply(
+  split(seq_len(nrow(mtx_tpm_cor)), ceiling(seq_len(nrow(mtx_tpm_cor)) / 2000)),
+  function(idx) cor(t(mtx_clr_sp), t(mtx_tpm_cor[idx, , drop = FALSE]),
+                    method = "spearman", use = "pairwise.complete.obs")
+))
+saveRDS(rna_cor_sp, file.path(DIR_RDS, "rna_species_gene_cor.rds"))
+
+# Protein correlation: species x protein
+prot_cor_sp <- matrix(NA_real_, nrow = nrow(mtx_clr_sp), ncol = nrow(mtx_prot_log),
+                      dimnames = list(rownames(mtx_clr_sp), rownames(mtx_prot_log)))
+for (g in seq_len(nrow(mtx_clr_sp))) {
+  abund_vec <- mtx_clr_sp[g, samples_common]
+  prot_cor_sp[g, ] <- apply(mtx_prot_log, 1, function(v) {
+    idx <- !is.na(v)
+    if (sum(idx) < 10) return(NA_real_)
+    cor(abund_vec[idx], v[idx], method = "spearman")
+  })
+}
+saveRDS(prot_cor_sp, file.path(DIR_RDS, "prot_species_protein_cor.rds"))
+
+rna_cor_sp  <- readRDS(file.path(DIR_RDS, "rna_species_gene_cor.rds"))
+prot_cor_sp <- readRDS(file.path(DIR_RDS, "prot_species_protein_cor.rds"))
+
+# Heatmap: pathway-annotated species correlation
+gsea_results_sp <- lapply(rownames(rna_cor_sp), function(sp) {
+  rank_vec <- rna_cor_sp[sp, ]
+  rank_vec <- sort(rank_vec[!is.na(rank_vec)], decreasing = TRUE)
+  
+  fgsea(pathways    = hallmark_sets,
+        stats       = rank_vec,
+        minSize     = 10,
+        maxSize     = 500,
+        nPermSimple = 1000,
+        eps         = 0) %>%
+    filter(padj < 0.05) %>%
+    mutate(species = sp)
+})
+names(gsea_results_sp) <- rownames(rna_cor_sp)
+
+core_genes_sp <- lapply(names(gsea_results_sp), function(sp) {
+  res <- gsea_results_sp[[sp]]
+  if (nrow(res) == 0) return(NULL)
+  res %>%
+    select(pathway, NES, leadingEdge) %>%
+    mutate(gene = lapply(leadingEdge, identity)) %>%
+    unnest(gene) %>%
+    select(pathway, NES, gene) %>%
+    mutate(species = sp)
+}) %>%
+  bind_rows()
+
+gene_order_sp <- core_genes_sp %>%
+  distinct(gene, pathway) %>%
+  mutate(pathway = factor(pathway, levels = sort(unique(pathway)))) %>%
+  arrange(pathway, gene) %>%
+  group_by(gene) %>%
+  dplyr::slice(1) %>%
+  ungroup() %>%
+  arrange(pathway, gene) %>%
+  pull(gene) %>%
+  unique()
+
+gene_use_sp <- gene_order_sp[gene_order_sp %in% colnames(rna_cor_sp)]
+gene_use_sp <- gene_use_sp[
+  rowSums(!is.na(rna_cor_sp[, gene_use_sp, drop = FALSE])) >=
+    ceiling(0.3 * nrow(rna_cor_sp))
+]
+
+rna_mat_sp <- rna_cor_sp[rownames(rna_cor_sp), gene_use_sp]
+
+prot_mat_sp <- matrix(NA_real_, nrow = nrow(rna_mat_sp), ncol = length(gene_use_sp),
+                      dimnames = list(rownames(rna_mat_sp), gene_use_sp))
+for (pg in colnames(prot_cor_sp)) {
+  sym <- gene_name_map[pg]
+  if (!is.na(sym) && sym %in% gene_use_sp) {
+    for (sp in rownames(prot_mat_sp)) {
+      if (is.na(prot_mat_sp[sp, sym]))
+        prot_mat_sp[sp, sym] <- prot_cor_sp[sp, pg]
+    }
+  }
+}
+
+rna_mat_sp_capped  <- pmax(pmin(rna_mat_sp,  fc_cap), -fc_cap)
+prot_mat_sp_capped <- pmax(pmin(prot_mat_sp, fc_cap), -fc_cap)
+
+all_pathways_sp <- sort(unique(core_genes_sp$pathway))
+pw_short_sp     <- gsub("HALLMARK_", "", all_pathways_sp) %>% str_to_sentence()
+pw_colors_sp    <- setNames(
+  colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(length(all_pathways_sp)),
+  all_pathways_sp
+)
+
+pathway_anno_sp <- lapply(all_pathways_sp, function(pw) {
+  vec <- ifelse(gene_use_sp %in% filter(core_genes_sp, pathway == pw)$gene, pw, NA_character_)
+  anno_simple(vec, which = "column",
+              col    = setNames(pw_colors_sp[pw], pw),
+              na_col = "white",
+              height = unit(2, "mm"))
+})
+names(pathway_anno_sp) <- all_pathways_sp
+
+col_anno_sp <- do.call(HeatmapAnnotation, c(
+  pathway_anno_sp,
+  list(show_annotation_name = FALSE, which = "column")
+))
+
+sp_genus <- gsub("_.*", "", rownames(rna_mat_sp))
+
+sp_log2cpm <- log2(rowMeans(mtx_cpm_sp_filt) + 1)
+
+abund_col_sp <- colorRamp2(
+  c(min(sp_log2cpm), max(sp_log2cpm)),
+  c("#e8f4f8", "#1a5276")
+)
+
+prot_anno_sp <- rowAnnotation(
+  Proteome_overlap = anno_simple(
+    ifelse(sp_genus %in% high_overlap_g, "yes", "no"),
+    col    = c("yes" = "#922b21", "no" = "grey80"),
+    na_col = "grey90",
+    width  = unit(4, "mm")
+  ),
+  log2CPM = anno_simple(
+    sp_log2cpm[rownames(rna_mat_sp)],
+    col    = abund_col_sp,
+    na_col = "grey90",
+    width  = unit(4, "mm")
+  ),
+  annotation_name_side = "bottom",
+  annotation_name_gp   = gpar(fontsize = 7)
+)
+
+pw_legend_sp <- Legend(
+  labels    = pw_short_sp,
+  legend_gp = gpar(fill = pw_colors_sp),
+  title     = "Pathway",
+  ncol      = 2,
+  title_gp  = gpar(fontsize = 8, fontface = "bold"),
+  labels_gp = gpar(fontsize = 7)
+)
+
+prot_legend <- Legend(
+  labels    = c("> 10%", "<= 10%"),
+  legend_gp = gpar(fill = c("#922b21", "grey80")),
+  title     = "Proteome overlap",
+  title_gp  = gpar(fontsize = 8, fontface = "bold"),
+  labels_gp = gpar(fontsize = 7)
+)
+abund_legend <- Legend(
+  col_fun   = abund_col_sp,
+  title     = "log2CPM",
+  title_gp  = gpar(fontsize = 8, fontface = "bold"),
+  labels_gp = gpar(fontsize = 7),
+  direction = "vertical"
+)
+
+rna_mat_sp_capped[is.na(rna_mat_sp_capped)] <- 0
+
+ht_sp <- Heatmap(
+  rna_mat_sp_capped,
+  name              = "RNA\nSpearman r",
+  col               = cor_col_fun,
+  cluster_rows      = TRUE,
+  cluster_columns   = FALSE,
+  show_row_names    = TRUE,
+  show_column_names = FALSE,
+  row_names_gp      = gpar(fontsize = 8),
+  na_col            = "grey90",
+  top_annotation    = col_anno_sp,
+  right_annotation  = prot_anno_sp,
+  column_title      = "Core enrichment genes (selected Hallmark pathways)",
+  use_raster        = FALSE
+)
+
+pdf(file.path(DIR_RES, "Heatmap_species_pathway_RNA_protein_cor.pdf"),
+    width = 10, height = 8)
+draw(ht_sp,
+     annotation_legend_list = list(pw_legend_sp, prot_legend, abund_legend),
+     merge_legend = FALSE)
+dev.off()
+
