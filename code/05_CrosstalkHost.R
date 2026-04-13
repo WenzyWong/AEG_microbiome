@@ -388,7 +388,7 @@ abund_col_sp <- colorRamp2(
 prot_anno_sp <- rowAnnotation(
   Proteome_overlap = anno_simple(
     ifelse(sp_genus %in% high_overlap_g, "yes", "no"),
-    col    = c("yes" = "#922b21", "no" = "grey80"),
+    col    = c("yes" = "tomato", "no" = "grey80"),
     na_col = "grey90",
     width  = unit(4, "mm")
   ),
@@ -413,7 +413,7 @@ pw_legend_sp <- Legend(
 
 prot_legend <- Legend(
   labels    = c("> 10%", "<= 10%"),
-  legend_gp = gpar(fill = c("#922b21", "grey80")),
+  legend_gp = gpar(fill = c("tomato", "grey80")),
   title     = "Proteome overlap",
   title_gp  = gpar(fontsize = 8, fontface = "bold"),
   labels_gp = gpar(fontsize = 7)
@@ -451,3 +451,138 @@ draw(ht_sp,
      merge_legend = FALSE)
 dev.off()
 
+library(ggrepel)
+
+# Significant RNA correlations per species
+rna_pval_sp <- spearman_pval(rna_cor_sp, length(samples_common))
+
+sig_df <- lapply(rownames(rna_cor_sp), function(sp) {
+  r_vec <- rna_cor_sp[sp, ]
+  p_vec <- rna_pval_sp[sp, ]
+  data.frame(
+    species  = sp,
+    gene     = colnames(rna_cor_sp),
+    Rs       = r_vec,
+    pval     = p_vec,
+    stringsAsFactors = FALSE
+  )
+}) %>%
+  bind_rows() %>%
+  filter(!is.na(Rs), !is.na(pval)) %>%
+  mutate(
+    sig = case_when(
+      Rs >= 0.3 & pval < 0.05  ~ "Pos",
+      Rs <= -0.3 & pval < 0.05 ~ "Neg",
+      TRUE                      ~ "ns"
+    )
+  )
+
+# Species order: by abundance (high to low)
+sp_order <- names(sort(sp_log2cpm, decreasing = TRUE))
+sp_order <- sp_order[sp_order %in% rownames(rna_cor_sp)]
+sig_df$species <- factor(sig_df$species, levels = sp_order)
+
+# Top 3 up and down per species for labelling
+label_df <- sig_df %>%
+  filter(sig != "ns") %>%
+  group_by(species, sig) %>%
+  slice_max(order_by = abs(Rs), n = 3) %>%
+  ungroup()
+
+# Alternating background shading
+bg_df <- data.frame(
+  species = sp_order,
+  xmin    = seq_along(sp_order) - 0.5,
+  xmax    = seq_along(sp_order) + 0.5,
+  fill    = ifelse(seq_along(sp_order) %% 2 == 0, "grey92", "white")
+)
+
+sp_genus_order <- gsub("_.*", "", sp_order)
+label_fill <- ifelse(sp_genus_order %in% high_overlap_g, "tomato", "grey")
+label_df_box <- data.frame(
+  species    = factor(sp_order, levels = sp_order),
+  label_fill = label_fill,
+  stringsAsFactors = FALSE
+)
+
+# Y cap for display
+y_cap <- 0.8
+jitter_pos <- position_jitter(width = 0.35, height = 0, seed = 42)
+
+p <- ggplot() +
+  # Alternating background
+  geom_rect(data = bg_df,
+            aes(xmin = xmin, xmax = xmax, ymin = -y_cap * 1.35, ymax = y_cap * 1.35,
+                fill = fill),
+            inherit.aes = FALSE) +
+  scale_fill_identity() +
+  # Non-significant points (small, grey)
+  geom_point(data = filter(sig_df, sig == "ns"),
+             aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap)),
+             position = jitter_pos,
+             color = "grey75", size = 0.6, alpha = 0.4) +
+  # Significant points
+  geom_point(data = filter(sig_df, sig != "ns"),
+             aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap), color = sig),
+             position = jitter_pos,
+             size = 1.0, alpha = 0.7) +
+  scale_color_manual(
+    values = c("Pos" = "#c0392b", "Neg" = "#2980b9"),
+    name   = NULL
+  ) +
+  # Zero line
+  geom_hline(yintercept = 0, linewidth = 0.3, color = "grey40") +
+  # Threshold lines
+  geom_hline(yintercept =  0.3, linewidth = 0.3, color = "grey60", linetype = "dashed") +
+  geom_hline(yintercept = -0.3, linewidth = 0.3, color = "grey60", linetype = "dashed") +
+  # Gene labels
+  geom_text_repel(
+    data = label_df,
+    aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap),
+        label = gene, color = sig),
+    position      = jitter_pos,
+    size          = 2.2,
+    fontface      = "italic",
+    max.overlaps  = 20,
+    segment.size  = 0.3,
+    segment.color = "grey50",
+    show.legend   = FALSE,
+    box.padding   = 0.2,
+    force         = 1.5,
+    seed          = 42
+  ) +
+  # Species label boxes at y = 0
+  geom_tile(data = label_df_box,
+            aes(x = species, y = 0, fill = label_fill),
+            height = 0.08, width = 0.9,
+            color  = "white", linewidth = 0.3,
+            inherit.aes = FALSE) +
+  geom_text(data = label_df_box,
+            aes(x = species, y = 0,
+                label = gsub("_", " ", species)),
+            size     = 2.0,
+            color    = "white",
+            fontface = "italic",
+            angle    = 0,
+            inherit.aes = FALSE) +
+  # Axes
+  scale_y_continuous(
+    limits = c(-y_cap * 1.35, y_cap * 1.35),
+    breaks = seq(-0.6, 0.6, 0.3)
+  ) +
+  labs(x = "Species", y = "Spearman Rs") +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x       = element_blank(),
+    axis.ticks.x      = element_blank(),
+    panel.grid        = element_blank(),
+    panel.border      = element_rect(color = 1),
+    legend.position   = c(0.98, 0.98),
+    legend.justification = c(1, 1),
+    legend.background = element_rect(fill = "white", color = "grey80"),
+    legend.key.size   = unit(0.4, "cm"),
+    legend.text       = element_text(size = 9)
+  )
+
+ggsave(file.path(DIR_RES, "Lollipop_species_Rs_genes.pdf"),
+       p, width = max(14, length(sp_order) * 0.9), height = 7)
