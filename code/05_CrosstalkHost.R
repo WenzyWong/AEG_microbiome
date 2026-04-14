@@ -54,43 +54,12 @@ samples_common <- Reduce(intersect, list(
 ))
 
 #######################
-# Top 20 genera by mean relative abundance
-mtx_cpm_filt  <- mtx_cpm[rowSums(mtx_cpm[, samples_common] > 1) >= ceiling(0.2 * length(samples_common)), samples_common]
-top20_genera  <- rownames(mtx_cpm_filt)[order(rowMeans(mtx_cpm_filt / 1e4), decreasing = TRUE)][1:20]
-mtx_clr       <- t(as.matrix(clr(t(mtx_cpm_filt[top20_genera, ] + 0.5))))
+# Top 20 genera: global abundance across all samples
+top20_genera <- rownames(mtx_cpm)[order(rowMeans(mtx_cpm / 1e4), decreasing = TRUE)][1:20]
+mean_abund   <- rowMeans(mtx_cpm[top20_genera, ] / 1e4)
 
-###########
-# PERMANOVA
-clinical_sub <- clinical %>%
-  mutate(`No.` = paste0("C", `No.`)) %>%
-  filter(No. %in% samples_common) %>%
-  mutate(
-    tumor_dims    = str_extract_all(`Primary tumor size`, "[0-9.]+"),
-    tumor_max_dim = map_dbl(tumor_dims, ~ max(as.numeric(.))),
-    T_stage       = str_extract(`TNM stage`, "T[0-9a-z]+"),
-    N_stage       = str_extract(`TNM stage`, "N[0-9]+"),
-    M_stage       = str_extract(`TNM stage`, "M[0-9]"),
-    stage_group   = case_when(
-      `Pathological stage` %in% c("I","IA","IB","II","IIA","IIB") ~ "Early",
-      `Pathological stage` %in% c("III","IIIA","IIIB","IIIC","IV") ~ "Late",
-      TRUE ~ NA_character_)
-  )
-
-meta_permanova <- clinical_sub %>%
-  mutate(Age_group = if_else(Age >= median(Age, na.rm = TRUE), "High", "Low")) %>%
-  select(No., Age_group, Sex, Smoking, Alcohol,
-         `Siewert type`, `Borrmann classification`, `Lauren Classification`,
-         stage_group, N_stage, M_stage, tumor_max_dim) %>%
-  column_to_rownames("No.") %>%
-  drop_na()
-
-dist_sub <- as.dist(as.matrix(dist(t(mtx_clr)))[rownames(meta_permanova), rownames(meta_permanova)])
-
-adonis2(
-  dist_sub ~ stage_group + `Lauren Classification` + `Borrmann classification` +
-    `Siewert type` + N_stage + M_stage + tumor_max_dim + Age_group + Sex + Smoking + Alcohol,
-  data = meta_permanova, permutations = 999, by = "margin"
-)
+# CLR on common tumour samples only (for correlation)
+mtx_clr <- t(as.matrix(clr(t(mtx_cpm[top20_genera, samples_common] + 0.5))))
 
 #######################
 # RNA-seq correlation
@@ -107,11 +76,10 @@ saveRDS(rna_cor_mat, file.path(DIR_RDS, "rna_genus_gene_cor.rds"))
 
 #######################
 # Proteomics correlation
-mtx_prot_log <- log2(replace(
-  as.matrix(mutate(mtx_hpro[, samples_common], across(everything(), as.numeric))),
-  as.matrix(mutate(mtx_hpro[, samples_common], across(everything(), as.numeric))) == 0, NA
-))
-rownames(mtx_prot_log) <- rownames(mtx_hpro)
+mtx_prot_num <- as.matrix(mutate(mtx_hpro[, samples_common], across(everything(), as.numeric)))
+rownames(mtx_prot_num) <- rownames(mtx_hpro)
+mtx_prot_num[mtx_prot_num == 0] <- NA
+mtx_prot_log <- log2(mtx_prot_num)
 mtx_prot_log <- mtx_prot_log[rowSums(!is.na(mtx_prot_log)) >= ceiling(0.5 * length(samples_common)), ]
 
 prot_cor_mat <- matrix(NA_real_, nrow = nrow(mtx_clr), ncol = nrow(mtx_prot_log),
@@ -126,13 +94,31 @@ for (g in seq_len(nrow(mtx_clr))) {
 }
 saveRDS(prot_cor_mat, file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
 
+rna_cor_mat  <- readRDS(file.path(DIR_RDS, "rna_genus_gene_cor.rds"))
+prot_cor_mat <- readRDS(file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
+
 #######################
 # Circos lollipop
-mean_abund <- rowMeans(mtx_cpm_filt[top20_genera, ] / 1e4)
-genus_colors <- setNames(
-  as.character(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 23:27, 2, 4, 5, 7, 9)]),
-  top20_genera
-)
+spearman_pval <- function(r_mat, n) {
+  2 * pt(-abs(r_mat * sqrt((n - 2) / (1 - r_mat^2))), df = n - 2)
+}
+
+rna_sig  <- abs(rna_cor_mat) >= 0.3 & spearman_pval(rna_cor_mat,  length(samples_common)) < 0.05
+prot_sig <- abs(prot_cor_mat) >= 0.3 & spearman_pval(prot_cor_mat, length(samples_common)) < 0.05
+rna_sig[is.na(rna_sig)]   <- FALSE
+prot_sig[is.na(prot_sig)] <- FALSE
+
+prot_gene_map  <- setNames(mtx_hpro$Gene_names, mtx_hpro$Protein_group)
+prot_sig_counts <- rowSums(prot_sig)
+
+overlap_counts <- sapply(rownames(rna_cor_mat), function(g) {
+  rna_genes  <- colnames(rna_cor_mat)[rna_sig[g, ]]
+  prot_genes <- colnames(prot_cor_mat)[prot_sig[g, ]] %>%
+    { prot_gene_map[.] } %>% na.omit() %>%
+    paste(collapse = ";") %>% strsplit(";") %>%
+    unlist() %>% trimws() %>% unique()
+  length(intersect(rna_genes, prot_genes))
+})
 
 overlap_df <- data.frame(
   genus      = names(overlap_counts),
@@ -141,9 +127,17 @@ overlap_df <- data.frame(
   stringsAsFactors = FALSE
 ) %>%
   mutate(pct = ifelse(prot_total > 0, count / prot_total * 100, 0)) %>%
-  .[match(genera_by_abund, .$genus), ]
+  .[match(top20_genera, .$genus), ]
 
-genera  <- overlap_df$genus
+genera       <- overlap_df$genus
+abund_scaled <- setNames(
+  (mean_abund - min(mean_abund)) / (max(mean_abund) - min(mean_abund)),
+  top20_genera
+)
+genus_colors <- setNames(
+  as.character(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 23:27, 2, 4, 5, 7, 9)]),
+  top20_genera
+)
 max_pct <- ceiling(max(overlap_df$pct))
 
 # Abundance track: scale mean_abund to [0, 1] for bar height
@@ -191,7 +185,7 @@ circos.track(
     circos.text(0.5, row$pct,
                 labels = sprintf("%.1f%%\n(n=%d)", row$pct, row$count),
                 adj = c(0.5, -0.3), cex = 0.45,
-                niceFacing = TRUE, facing = "clockwise", col = genus_colors[g])
+                niceFacing = TRUE, facing = "bending.inside", col = "black")
   }
 )
 
@@ -206,8 +200,8 @@ circos.track(
     g <- get.cell.meta.data("sector.index")
     circos.rect(0, 0, 1, 1, col = genus_colors[g], border = "white", lwd = 0.5)
     circos.text(0.5, 0.5, labels = gsub("_.*", "", g),
-                facing = "clockwise", niceFacing = TRUE,
-                cex = 0.55, font = 2, col = "white")
+                facing = "bending.inside", niceFacing = TRUE,
+                cex = 0.45, font = 2, col = "white")
   }
 )
 
@@ -227,7 +221,7 @@ circos.track(
                 adj        = c(0.5, 0.5),
                 cex        = 0.38,
                 niceFacing = TRUE,
-                facing     = "clockwise",
+                facing     = "bending.inside",
                 col        = ifelse(val > 0.6, "white", "black"))
   }
 )
@@ -516,11 +510,6 @@ p <- ggplot() +
                 fill = fill),
             inherit.aes = FALSE) +
   scale_fill_identity() +
-  # Non-significant points (small, grey)
-  geom_point(data = filter(sig_df, sig == "ns"),
-             aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap)),
-             position = jitter_pos,
-             color = "grey75", size = 0.6, alpha = 0.4) +
   # Significant points
   geom_point(data = filter(sig_df, sig != "ns"),
              aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap), color = sig),
