@@ -663,7 +663,7 @@ p_sankey <- ggplot() +
   scale_size_continuous(range = c(1, 5), name = "Importance") +
   geom_text(data = df_gene,
             aes(x, y = y - 0.08, label = gene),
-            vjust = 1, size = 1.8, fontface = "italic", angle = 45, hjust = 1) +
+            vjust = .5, size = 1.8, fontface = "italic", angle = 90, hjust = 1) +
   annotate("text", x = min(x_range) - 1, y = c(y_genus, y_species, y_gene),
            label = c("Genus", "Species", "Gene"), fontface = "bold", size = 3, hjust = 1) +
   coord_cartesian(xlim = c(min(x_range) - 2, max(x_range) + 1),
@@ -676,5 +676,4 @@ p_sankey <- ggplot() +
   labs(title = "Species-gene regulatory network (GENIE3)")
 
 ggsave(file.path(DIR_RES, "Sankey_GENIE3_horizontal.pdf"), p_sankey,
-       width  = max(length(gene_order_s) * 0.4, 16),
-       height = 8)
+       width  = 16, height = 6)
