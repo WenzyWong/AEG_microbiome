@@ -90,7 +90,7 @@ calc_prot_cor <- function(clr_mat, prot_mat, samples) {
   out
 }
 
-#######################
+#############################
 # RNA-seq correlation (genus)
 mtx_tpm_cor <- log1p(as.matrix(mtx_htpm_filt[, samples_common]))
 cv_gene     <- apply(mtx_tpm_cor, 1, function(x) sd(x) / (mean(x) + 1e-6))
@@ -103,7 +103,7 @@ rna_cor_mat <- do.call(cbind, lapply(
 ))
 saveRDS(rna_cor_mat, file.path(DIR_RDS, "rna_genus_gene_cor.rds"))
 
-#######################
+###################################
 # Proteomics preprocessing (shared)
 mtx_prot_num <- as.matrix(mutate(mtx_hpro[, samples_common], across(everything(), as.numeric)))
 rownames(mtx_prot_num) <- rownames(mtx_hpro)
@@ -111,12 +111,12 @@ mtx_prot_num[mtx_prot_num == 0] <- NA
 mtx_prot_log <- log2(mtx_prot_num)
 mtx_prot_log <- mtx_prot_log[rowSums(!is.na(mtx_prot_log)) >= ceiling(0.5 * length(samples_common)), ]
 
-#######################
+################################
 # Proteomics correlation (genus)
 prot_cor_mat <- calc_prot_cor(mtx_clr, mtx_prot_log, samples_common)
 saveRDS(prot_cor_mat, file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
 
-#######################
+#################
 # Circos lollipop
 n_common <- length(samples_common)
 rna_sig  <- abs(rna_cor_mat) >= 0.3 & spearman_pval(rna_cor_mat,  n_common) < 0.05
@@ -423,6 +423,72 @@ draw(ht_sp, annotation_legend_list = list(
 ), merge_legend = FALSE)
 dev.off()
 
+# KEGG gene sets (gene symbol format)
+kegg_sets <- msigdbr(species = "Homo sapiens", category = "C2", subcollection = "CP:KEGG_MEDICUS") %>%
+  select(gs_name, gene_symbol) %>%
+  { split(.$gene_symbol, .$gs_name) }
+
+# Run fGSEA per species
+gsea_rna_kegg <- bind_rows(lapply(rownames(rna_cor_sp), function(sp) {
+  rank_vec <- sort(na.omit(rna_cor_sp[sp, ]), decreasing = TRUE)
+  
+  fgsea(pathways = kegg_sets, stats = rank_vec,
+        minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0) %>%
+    mutate(species = sp)
+}))
+sig_pathways <- gsea_rna_kegg %>%
+  filter(padj < 0.05) %>%
+  pull(pathway) %>% unique()
+gsea_rna_kegg <- gsea_rna_kegg %>% filter(pathway %in% sig_pathways)
+
+# Pathway order by significant NES direction count
+path_order_kegg <- gsea_rna_kegg %>%
+  mutate(sig_pos = padj < 0.05 & NES > 0,
+         sig_neg = padj < 0.05 & NES < 0) %>%
+  group_by(pathway) %>%
+  summarise(n_pos = sum(sig_pos), n_neg = sum(sig_neg),
+            n_sig = n_pos + n_neg, .groups = "drop") %>%
+  arrange(n_pos - n_neg, n_sig) %>%
+  pull(pathway)
+
+nes_bound_kegg <- max(abs(gsea_rna_kegg$NES), na.rm = TRUE)
+
+df_plot_kegg <- gsea_rna_kegg %>%
+  mutate(
+    pathway = factor(pathway, levels = path_order_kegg),
+    species = factor(species, levels = rownames(rna_cor_sp)),
+    signif  = padj < 0.05,
+    pw_label = gsub("^KEGG_MEDICUS_|^KEGG_MEDICUS_REFERENCE_", "", as.character(pathway)) %>%
+      tolower() %>% gsub("_", " ", .)
+  )
+
+p_rna_kegg <- ggplot(df_plot_kegg,
+                     aes(x = species, y = reorder(pw_label, as.integer(pathway)))) +
+  geom_point(aes(size = -log10(padj), color = NES, alpha = signif)) +
+  scale_color_gradientn(
+    colors = c("#3366CC", "white", "#CC3333"),
+    limits = c(-nes_bound_kegg, nes_bound_kegg),
+    name   = "NES"
+  ) +
+  scale_size_continuous(
+    name  = expression(-log[10](p.adj)),
+    range = c(1, 5)
+  ) +
+  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.2), guide = "none") +
+  labs(x = NULL, y = NULL,
+       title = "GSEA Dotplot - KEGG (RNA correlation)") +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(color = 1, angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y      = element_text(color = 1),
+    panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
+    plot.title       = element_text(face = "bold", size = 12, hjust = 0.5),
+    legend.position  = "right"
+  )
+
+ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_KEGG_cor.pdf"),
+       p_rna_kegg, width = 12, height = 8)
+
 ####################
 # Species Rs scatter
 rna_pval_sp <- spearman_pval(rna_cor_sp, n_common)
@@ -702,3 +768,7 @@ p_sankey <- ggplot() +
 
 ggsave(file.path(DIR_RES, "Sankey_GENIE3_horizontal.pdf"), p_sankey,
        width  = 16, height = 6)
+
+###########################
+# GSEA-hallmark in proteome
+
