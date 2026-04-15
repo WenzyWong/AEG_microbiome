@@ -255,29 +255,39 @@ saveRDS(prot_cor_sp, file.path(DIR_RDS, "prot_species_protein_cor.rds"))
 
 ################################################
 # Heatmap: pathway-annotated species correlation
-target_pathways <- c(
+pathways_ordered <- c(
+  # Metabolism
   "HALLMARK_ADIPOGENESIS",
-  "HALLMARK_DNA_REPAIR",
-  "HALLMARK_E2F_TARGETS",
-  "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION",
   "HALLMARK_FATTY_ACID_METABOLISM",
-  "HALLMARK_G2M_CHECKPOINT",
   "HALLMARK_GLYCOLYSIS",
-  "HALLMARK_HEDGEHOG_SIGNALING",
+  "HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY",
   "HALLMARK_HYPOXIA",
-  "HALLMARK_IL2_STAT5_SIGNALING",
-  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
-  "HALLMARK_INFLAMMATORY_RESPONSE",
-  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
-  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
-  "HALLMARK_KRAS_SIGNALING_UP",
-  "HALLMARK_KRAS_SIGNALING_DN",
+  # Cell Cycle
+  "HALLMARK_E2F_TARGETS",
+  "HALLMARK_G2M_CHECKPOINT",
   "HALLMARK_MITOTIC_SPINDLE",
   "HALLMARK_MYC_TARGETS_V1",
   "HALLMARK_MYC_TARGETS_V2",
+  "HALLMARK_DNA_REPAIR",
   "HALLMARK_P53_PATHWAY",
-  "HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY",
+  # Metastasis
+  "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION",
+  "HALLMARK_HEDGEHOG_SIGNALING",
+  "HALLMARK_KRAS_SIGNALING_UP",
+  "HALLMARK_KRAS_SIGNALING_DN",
+  # Immune
+  "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+  "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  "HALLMARK_IL2_STAT5_SIGNALING",
+  "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  "HALLMARK_INFLAMMATORY_RESPONSE",
   "HALLMARK_TNFA_SIGNALING_VIA_NFKB"
+)
+
+pw_to_cat <- setNames(
+  c(rep("Metabolism", 5), rep("Cell Cycle", 7),
+    rep("Metastasis", 4), rep("Immune", 6)),
+  pathways_ordered
 )
 
 # Hallmark gene sets
@@ -307,7 +317,7 @@ core_genes_sp <- lapply(names(gsea_results_sp), function(sp) {
 
 gene_order_sp <- core_genes_sp %>%
   distinct(gene, pathway) %>%
-  mutate(pathway = factor(pathway, levels = sort(unique(pathway)))) %>%
+  mutate(pathway = factor(pathway, levels = pathways_ordered)) %>%
   arrange(pathway, gene) %>%
   group_by(gene) %>% slice(1) %>% ungroup() %>%
   arrange(pathway, gene) %>% pull(gene) %>% unique()
@@ -318,6 +328,18 @@ gene_use_sp <- gene_use_sp[
 ]
 
 rna_mat_sp <- rna_cor_sp[, gene_use_sp]
+
+gene_primary_pw <- core_genes_sp %>%
+  distinct(gene, pathway) %>%
+  mutate(pathway = factor(pathway, levels = pathways_ordered)) %>%
+  arrange(pathway) %>%
+  group_by(gene) %>% slice(1) %>% ungroup() %>%
+  filter(gene %in% gene_use_sp)
+
+col_split_vec <- factor(
+  pw_to_cat[as.character(gene_primary_pw$pathway[match(gene_use_sp, gene_primary_pw$gene)])],
+  levels = c("Metabolism", "Cell Cycle", "Metastasis", "Immune")
+)
 
 prot_mat_sp <- matrix(NA_real_, nrow = nrow(rna_mat_sp), ncol = length(gene_use_sp),
                       dimnames = list(rownames(rna_mat_sp), gene_use_sp))
@@ -336,7 +358,7 @@ fc_cap <- 0.6
 rna_mat_sp_capped  <- pmax(pmin(rna_mat_sp,  fc_cap), -fc_cap)
 rna_mat_sp_capped[is.na(rna_mat_sp_capped)] <- 0
 
-all_pathways_sp <- sort(unique(core_genes_sp$pathway))
+all_pathways_sp <- pathways_ordered[pathways_ordered %in% unique(core_genes_sp$pathway)]
 pw_short_sp     <- gsub("HALLMARK_", "", all_pathways_sp) %>% str_to_sentence()
 pw_colors_sp    <- setNames(
   colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(length(all_pathways_sp)),
@@ -352,6 +374,7 @@ col_anno_sp <- do.call(HeatmapAnnotation, c(
   list(show_annotation_name = FALSE, which = "column")
 ))
 
+# Row annotations
 sp_genus    <- gsub("_.*", "", rownames(rna_mat_sp))
 sp_log2cpm  <- log2(rowMeans(mtx_cpm_sp_filt) + 1)
 abund_col_sp <- colorRamp2(range(sp_log2cpm), c("#e8f4f8", "#1a5276"))
@@ -377,10 +400,12 @@ cor_col_fun <- colorRamp2(
 ht_sp <- Heatmap(
   rna_mat_sp_capped, name = "RNA\nSpearman r", col = cor_col_fun,
   cluster_rows = TRUE, cluster_columns = FALSE,
+  column_split = col_split_vec,
+  column_gap = unit(1.5, "mm"),
   show_row_names = TRUE, show_column_names = FALSE,
   row_names_gp = gpar(fontsize = 8), na_col = "grey90",
   top_annotation = col_anno_sp, right_annotation = prot_anno_sp,
-  column_title = "Core enrichment genes (selected Hallmark pathways)",
+  column_title_gp = gpar(fontsize = 9, fontface = "bold"),
   use_raster = FALSE
 )
 
