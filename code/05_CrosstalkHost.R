@@ -25,6 +25,7 @@ library(GENIE3)
 library(foreach)
 library(doParallel)
 library(fgsea)
+library(immunedeconv)
 
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_RES <- "/data/yzwang/project/AEG_seiri/results/F3_crosstalk/"
@@ -423,6 +424,7 @@ draw(ht_sp, annotation_legend_list = list(
 ), merge_legend = FALSE)
 dev.off()
 
+#####################################
 # KEGG gene sets (gene symbol format)
 kegg_sets <- msigdbr(species = "Homo sapiens", category = "C2", subcollection = "CP:KEGG_MEDICUS") %>%
   select(gs_name, gene_symbol) %>%
@@ -667,7 +669,7 @@ x_gn <- setNames(
 )
 
 genus_order_s <- genus_order_s[!is.na(x_g)]
-x_g           <- x_g[genus_order_s]
+x_g <- x_g[genus_order_s]
 
 # Extend genus_colors for any missing genera
 missing_genera <- setdiff(unique(gsub("_.*", "", sp_order_s)), names(genus_colors))
@@ -678,11 +680,15 @@ if (length(missing_genera) > 0) {
   ))
 }
 
-coord_sp   <- data.frame(species = sp_order_s,  x_sp_coord = x_sp[sp_order_s],   stringsAsFactors = FALSE)
-coord_gene <- data.frame(gene    = gene_order_s, x_gn_coord = x_gn[gene_order_s], stringsAsFactors = FALSE)
+coord_sp <- data.frame(species = sp_order_sm,
+                       x_sp_coord = x_sp[sp_order_s],
+                       stringsAsFactors = FALSE)
+coord_gene <- data.frame(gene = gene_order_s, 
+                         x_gn_coord = x_gn[gene_order_s], 
+                         stringsAsFactors = FALSE)
 
 top5_per_sp <- top5_base %>%
-  left_join(coord_sp,   by = "species") %>%
+  left_join(coord_sp, by = "species") %>%
   left_join(coord_gene, by = "gene")
 
 df_genus <- data.frame(
@@ -769,6 +775,153 @@ p_sankey <- ggplot() +
 ggsave(file.path(DIR_RES, "Sankey_GENIE3_horizontal.pdf"), p_sankey,
        width  = 16, height = 6)
 
-###########################
-# GSEA-hallmark in proteome
+################################
+# Immune infiltration prediction
+# immunedeconv requires: genes x samples, rownames = HGNC symbol, values = TPM
+samples_rna_tumour <- colnames(mtx_htpm_filt)[grep("^C", colnames(mtx_htpm_filt))]
 
+tpm_deconv <- as.matrix(mtx_htpm_filt[, samples_rna_tumour])
+
+# Remove duplicate gene symbols (keep highest mean)
+tpm_deconv <- tpm_deconv[order(rowMeans(tpm_deconv), decreasing = TRUE), ]
+tpm_deconv <- tpm_deconv[!duplicated(rownames(tpm_deconv)), ]
+
+cat("TPM matrix dim:", dim(tpm_deconv), "\n")
+
+# Deconvolution
+deconv_timer     <- deconvolute(tpm_deconv, method = "timer",
+                                indications = rep("stad", ncol(tpm_deconv)))
+deconv_quantiseq <- deconvolute(tpm_deconv, method = "quantiseq")
+deconv_epic      <- deconvolute(tpm_deconv, method = "epic")
+deconv_mcp <- deconvolute(tpm_deconv, method = "mcp_counter")
+deconv_est <- deconvolute(tpm_deconv, method = "estimate")
+
+deconv_list <- list(timer = deconv_timer,
+                    quantiseq = deconv_quantiseq,
+                    epic = deconv_epic,
+                    mcp = deconv_mcp,
+                    est = deconv_est)
+saveRDS(deconv_list, file.path(DIR_RDS, "immune_deconvolution_results.rds"))
+
+immune_mat <- lapply(deconv_list, function(deconv_df) {
+  mat <- as.data.frame(deconv_df) %>%
+    column_to_rownames("cell_type") %>%
+    as.matrix()
+  mat
+})
+bar_multi <- lapply(names(immune_mat), function(method) {
+  mat <- immune_mat[[method]][, samples_shared, drop = FALSE]
+  as.data.frame(t(mat)) %>%
+    rownames_to_column("sample") %>%
+    pivot_longer(-sample, names_to = "cell_type", values_to = "score") %>%
+    mutate(score = pmax(score, 0), method = method)
+}) %>% bind_rows()
+
+ggplot(bar_multi, aes(x = sample, y = score, fill = cell_type)) +
+  geom_col(width = 0.85, position = "fill") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = c(0, 0)) +
+  facet_wrap(~ method, nrow = 4, scales = "free_y") +
+  scale_fill_manual(values = colorRampPalette(
+    RColorBrewer::brewer.pal(12, "Paired"))(length(unique(bar_multi$cell_type))),
+    name = "Cell type") +
+  labs(x = "Sample", y = "Proportion / Score",
+       title = "Immune deconvolution comparison") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid   = element_blank(),
+        strip.text   = element_text(face = "bold"),
+        legend.text  = element_text(size = 7),
+        plot.title   = element_text(face = "bold", hjust = 0.5))
+
+# Use estimate
+cell_mat <- immune_mat$est  # cell type x sample
+
+# Microbial CPM for RNA-only tumour samples
+samples_bac_tumour <- colnames(mtx_cpm_sp)[grep("^C", colnames(mtx_cpm_sp))]
+samples_shared     <- intersect(samples_rna_tumour, samples_bac_tumour)
+
+# Species filtering: present in >= 20% samples with CPM > 1
+sp_keep    <- rowSums(mtx_cpm_sp[, samples_shared] > 1) >= ceiling(0.2 * length(samples_shared))
+cpm_sp_sub <- mtx_cpm_sp[sp_keep, samples_shared]
+clr_sp_sub <- t(as.matrix(clr(t(cpm_sp_sub + 0.5))))
+
+# Align cell matrix to shared samples
+cell_mat_sub <- cell_mat[, samples_shared, drop = FALSE]
+
+n_shared <- length(samples_shared)
+
+cor_immune <- matrix(NA_real_,
+                     nrow = nrow(clr_sp_sub),
+                     ncol = nrow(cell_mat_sub),
+                     dimnames = list(rownames(clr_sp_sub), rownames(cell_mat_sub)))
+
+pval_immune <- cor_immune
+
+for (sp in rownames(clr_sp_sub)) {
+  for (ct in rownames(cell_mat_sub)) {
+    x <- clr_sp_sub[sp, samples_shared]
+    y <- cell_mat_sub[ct, samples_shared]
+    if (sd(y, na.rm = TRUE) < 1e-6) next   # skip near-zero variance cells
+    r <- cor(x, y, method = "spearman", use = "complete.obs")
+    t_stat <- r * sqrt((n_shared - 2) / (1 - r^2))
+    cor_immune[sp, ct]  <- r
+    pval_immune[sp, ct] <- 2 * pt(-abs(t_stat), df = n_shared - 2)
+  }
+}
+
+saveRDS(list(r = cor_immune, p = pval_immune),
+        file.path(DIR_RDS, "species_estimate_correlation.rds"))
+
+target_sp_in_imm <- intersect(target_sp$Species, rownames(cor_immune))
+cat("Target species with correlation data:", length(target_sp_in_imm), "\n")
+
+cor_ht_target  <- cor_immune[target_sp_in_imm, , drop = FALSE]
+pval_ht_target <- pval_immune[target_sp_in_imm, , drop = FALSE]
+
+sig_mat_target <- ifelse(pval_ht_target < 0.001, "***",
+                         ifelse(pval_ht_target < 0.01,  "**",
+                                ifelse(pval_ht_target < 0.05,  "*", "")))
+draw(Heatmap(
+  cor_ht_target,
+  name              = "Spearman r",
+  col               = immune_col_fun,
+  cluster_rows      = TRUE,
+  cluster_columns   = TRUE,
+  show_row_names    = TRUE,
+  show_column_names = TRUE,
+  row_names_gp      = gpar(fontsize = 8, fontface = "italic"),
+  column_names_gp   = gpar(fontsize = 8),
+  column_names_rot  = 45,
+  cell_fun          = function(j, i, x, y, width, height, fill) {
+    if (sig_mat_target[i, j] != "")
+      grid.text(sig_mat_target[i, j], x, y, gp = gpar(fontsize = 7))
+  },
+  na_col            = "grey90",
+  column_title      = "Target species - Immune cell correlation (quanTIseq)",
+  use_raster        = FALSE
+))
+
+bubble_df_target <- as.data.frame(as.table(cor_ht_target)) %>%
+  setNames(c("species", "cell_type", "r")) %>%
+  mutate(
+    p     = as.vector(pval_ht_target),
+    sig   = p < 0.05 & abs(r) >= 0.3,
+    genus = gsub("_.*", "", species)
+  ) %>%
+  arrange(desc(abs(r)))
+
+ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
+  geom_point(aes(size = abs(r), fill = r), shape = 21,
+             color = "grey30", stroke = 0.4) +
+  scale_fill_distiller(palette = "RdBu", direction = -1,
+                       limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
+                       name    = "Spearman r") +
+  scale_size_continuous(range = c(1.5, 7), name = "|r|") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        axis.text.y = element_text(size = 8, face = "italic"),
+        panel.grid  = element_line(color = "grey93")) +
+  labs(x = "Immune cell type", y = "Species",
+       title = "Target species - Immune cell associations (|r| >= 0.3, p < 0.05)")
