@@ -809,6 +809,9 @@ immune_mat <- lapply(deconv_list, function(deconv_df) {
     as.matrix()
   mat
 })
+
+samples_shared <- intersect(colnames(mtx_htpm_filt)[grep("^C", colnames(mtx_htpm_filt))], 
+                            colnames(mtx_cpm_sp)[grep("^C", colnames(mtx_cpm_sp))])
 bar_multi <- lapply(names(immune_mat), function(method) {
   mat <- immune_mat[[method]][, samples_shared, drop = FALSE]
   as.data.frame(t(mat)) %>%
@@ -863,7 +866,7 @@ for (sp in rownames(clr_sp_sub)) {
   for (ct in rownames(cell_mat_sub)) {
     x <- clr_sp_sub[sp, samples_shared]
     y <- cell_mat_sub[ct, samples_shared]
-    if (sd(y, na.rm = TRUE) < 1e-6) next   # skip near-zero variance cells
+    if (sd(y, na.rm = TRUE) < 1e-6) next
     r <- cor(x, y, method = "spearman", use = "complete.obs")
     t_stat <- r * sqrt((n_shared - 2) / (1 - r^2))
     cor_immune[sp, ct]  <- r
@@ -877,31 +880,36 @@ saveRDS(list(r = cor_immune, p = pval_immune),
 target_sp_in_imm <- intersect(target_sp$Species, rownames(cor_immune))
 cat("Target species with correlation data:", length(target_sp_in_imm), "\n")
 
-cor_ht_target  <- cor_immune[target_sp_in_imm, , drop = FALSE]
-pval_ht_target <- pval_immune[target_sp_in_imm, , drop = FALSE]
+cor_ht_target  <- cor_immune[target_sp_in_imm, c(1, 2, 4), drop = FALSE]
+pval_ht_target <- pval_immune[target_sp_in_imm, c(1, 2, 4), drop = FALSE]
 
 sig_mat_target <- ifelse(pval_ht_target < 0.001, "***",
                          ifelse(pval_ht_target < 0.01,  "**",
                                 ifelse(pval_ht_target < 0.05,  "*", "")))
+immune_col_fun <- colorRamp2(
+  c(-0.6, -0.3, 0, 0.3, 0.6),
+  c("#2166ac", "#92c5de", "white", "#f4a582", "#b2182b")
+)
+pdf(file.path(DIR_RES, "Heatmap_estimate_correlated_sp.pdf"), width = 8, height = 4)
 draw(Heatmap(
-  cor_ht_target,
+  t(cor_ht_target),
   name              = "Spearman r",
   col               = immune_col_fun,
   cluster_rows      = TRUE,
   cluster_columns   = TRUE,
   show_row_names    = TRUE,
   show_column_names = TRUE,
-  row_names_gp      = gpar(fontsize = 8, fontface = "italic"),
-  column_names_gp   = gpar(fontsize = 8),
+  row_names_gp      = gpar(fontsize = 8),
+  column_names_gp   = gpar(fontsize = 8, fontface = "italic"),
   column_names_rot  = 45,
   cell_fun          = function(j, i, x, y, width, height, fill) {
-    if (sig_mat_target[i, j] != "")
-      grid.text(sig_mat_target[i, j], x, y, gp = gpar(fontsize = 7))
+    if (sig_mat_target[j, i] != "")
+      grid.text(sig_mat_target[j, i], x, y, gp = gpar(fontsize = 7))
   },
   na_col            = "grey90",
-  column_title      = "Target species - Immune cell correlation (quanTIseq)",
   use_raster        = FALSE
 ))
+dev.off()
 
 bubble_df_target <- as.data.frame(as.table(cor_ht_target)) %>%
   setNames(c("species", "cell_type", "r")) %>%
@@ -911,7 +919,7 @@ bubble_df_target <- as.data.frame(as.table(cor_ht_target)) %>%
     genus = gsub("_.*", "", species)
   ) %>%
   arrange(desc(abs(r)))
-
+pdf(file.path(DIR_RES, "Dotplot_estimate_correlated_sp.pdf"), width = 8, height = 4)
 ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
   geom_point(aes(size = abs(r), fill = r), shape = 21,
              color = "grey30", stroke = 0.4) +
@@ -919,9 +927,10 @@ ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
                        limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
                        name    = "Spearman r") +
   scale_size_continuous(range = c(1.5, 7), name = "|r|") +
+  labs(x = "Estimated scores", y = "Species") +
   theme_bw(base_size = 11) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
-        axis.text.y = element_text(size = 8, face = "italic"),
-        panel.grid  = element_line(color = "grey93")) +
-  labs(x = "Immune cell type", y = "Species",
-       title = "Target species - Immune cell associations (|r| >= 0.3, p < 0.05)")
+  coord_flip() +
+  theme(axis.text.x = element_text(angle = 45, color = 1, hjust = 1, size = 9, face = "italic"),
+        axis.text.y = element_text(size = 8, color = 1),
+        panel.grid  = element_line(color = "grey93"))
+dev.off()
