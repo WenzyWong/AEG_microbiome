@@ -814,31 +814,63 @@ immune_mat <- lapply(deconv_list, function(deconv_df) {
 
 samples_shared <- intersect(colnames(mtx_htpm_filt)[grep("^C", colnames(mtx_htpm_filt))], 
                             colnames(mtx_cpm_sp)[grep("^C", colnames(mtx_cpm_sp))])
-bar_multi <- lapply(names(immune_mat), function(method) {
+for (method in names(immune_mat)) {
   mat <- immune_mat[[method]][, samples_shared, drop = FALSE]
-  as.data.frame(t(mat)) %>%
+  bar_df <- as.data.frame(t(mat)) %>%
     rownames_to_column("sample") %>%
     pivot_longer(-sample, names_to = "cell_type", values_to = "score") %>%
-    mutate(score = pmax(score, 0), method = method)
-}) %>% bind_rows()
+    mutate(score = pmax(score, 0))
 
-ggplot(bar_multi, aes(x = sample, y = score, fill = cell_type)) +
-  geom_col(width = 0.85, position = "fill") +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
-                     expand = c(0, 0)) +
-  facet_wrap(~ method, nrow = 4, scales = "free_y") +
-  scale_fill_manual(values = colorRampPalette(
-    RColorBrewer::brewer.pal(12, "Paired"))(length(unique(bar_multi$cell_type))),
-    name = "Cell type") +
-  labs(x = "Sample", y = "Proportion / Score",
-       title = "Immune deconvolution comparison") +
-  theme_bw(base_size = 10) +
-  theme(axis.text.x  = element_blank(),
-        axis.ticks.x = element_blank(),
-        panel.grid   = element_blank(),
-        strip.text   = element_text(face = "bold"),
-        legend.text  = element_text(size = 7),
-        plot.title   = element_text(face = "bold", hjust = 0.5))
+  bar_df <- bar_df %>%
+    group_by(sample) %>%
+    mutate(prop = score / sum(score)) %>%
+    ungroup()
+
+  ct_order <- bar_df %>%
+    group_by(cell_type) %>%
+    summarise(total_prop = sum(prop), .groups = "drop") %>%
+    arrange(desc(total_prop)) %>%
+    pull(cell_type)
+
+  top_ct <- ct_order[1]
+  sample_order <- bar_df %>%
+    filter(cell_type == top_ct) %>%
+    arrange(desc(prop)) %>%
+    pull(sample)
+  
+  bar_df <- bar_df %>%
+    mutate(
+      sample    = factor(sample, levels = sample_order),
+      cell_type = factor(cell_type, levels = rev(ct_order))
+    )
+  
+  n_ct <- length(ct_order)
+  ct_colors <- colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))(n_ct)
+  names(ct_colors) <- ct_order
+  
+  pdf(file.path(DIR_RES, paste0("Barplot_", method, "_proportion.pdf")),
+      width = 6, height = 4)
+  print(
+    ggplot(bar_df, aes(x = sample, y = score, fill = cell_type)) +
+      geom_col(width = 0.85, position = "fill") +
+      scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                         expand = c(0, 0)) +
+      scale_fill_manual(
+        values = ct_colors,
+        name   = "Cell type",
+        breaks = ct_order) +
+      labs(x = "Sample", y = "Proportion / Score",
+           title = paste0("Immune deconvolution - ", method)) +
+      theme_bw(base_size = 10) +
+      theme(axis.text.x  = element_blank(),
+            axis.ticks.x = element_blank(),
+            panel.grid   = element_blank(),
+            strip.text   = element_text(face = "bold"),
+            legend.text  = element_text(size = 7),
+            plot.title   = element_text(face = "bold", hjust = 0.5))
+  )
+  dev.off()
+}
 
 for (meth in names(immune_mat)) {
   cell_mat <- immune_mat[[meth]]
@@ -914,11 +946,13 @@ for (meth in names(immune_mat)) {
     mutate(
       p     = as.vector(pval_ht_target),
       sig   = p < 0.05 & abs(r) >= 0.3,
-      genus = gsub("_.*", "", species)
+      genus = gsub("_.*", "", species),
+      sig_level = cut(p,
+                      breaks = c(-Inf, 0.01, 0.05, Inf),
+                      labels = c("p < 0.01", "0.01 <= p < 0.05", "p >= 0.05"))
     ) %>%
     arrange(desc(abs(r)))
   
-  # Rank cell_type by (n_positive - n_negative) among significant correlations
   ct_order <- bubble_df_target %>%
     filter(sig) %>%
     group_by(cell_type) %>%
@@ -938,22 +972,25 @@ for (meth in names(immune_mat)) {
   
   bubble_df_target <- bubble_df_target %>%
     mutate(cell_type = factor(cell_type, levels = ct_order))
-  p_bubble <-
-    ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
-    geom_point(aes(size = abs(r), fill = r), shape = 21,
-               color = "grey30", stroke = 0.4) +
-    scale_fill_distiller(palette = "RdBu", direction = -1,
-                         limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
-                         name    = "Spearman r") +
-    scale_size_continuous(range = c(1.5, 7), name = "|r|") +
-    labs(x = "Estimated scores", y = "Species") +
-    theme_bw(base_size = 11) +
-    coord_flip() +
-    theme(axis.text.x = element_text(angle = 45, color = 1, hjust = 1, size = 9),
-          axis.text.y = element_text(size = 8, color = 1),
-          panel.grid  = element_line(color = "grey93"))
   
   pdf(file.path(DIR_RES, paste0("Dotplot_", meth, "_correlated_sp.pdf")), width = 8, height = 6)
-  print(p_bubble)
+  print(
+    ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
+      geom_point(aes(size = sig_level, fill = r), shape = 21,
+                 color = "grey30", stroke = 0.4) +
+      scale_fill_distiller(palette = "RdBu", direction = -1,
+                           limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
+                           name    = "Spearman r") +
+      scale_size_manual(
+        values = c("p < 0.01" = 7, "0.01 <= p < 0.05" = 4, "p >= 0.05" = 1.5),
+        name   = "Significance") +
+      labs(x = "Estimated scores", y = "Species") +
+      theme_bw(base_size = 11) +
+      coord_flip() +
+      theme(axis.text.x = element_text(angle = 90, color = 1, hjust = 1, 
+                                       vjust = .5, size = 8, face = "italic"),
+            axis.text.y = element_text(size = 8, color = 1),
+            panel.grid  = element_line(color = "grey93"))
+  )
   dev.off()
 }
