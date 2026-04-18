@@ -795,12 +795,14 @@ deconv_quantiseq <- deconvolute(tpm_deconv, method = "quantiseq")
 deconv_epic      <- deconvolute(tpm_deconv, method = "epic")
 deconv_mcp <- deconvolute(tpm_deconv, method = "mcp_counter")
 deconv_est <- deconvolute(tpm_deconv, method = "estimate")
+deconv_abis <- deconvolute(tpm_deconv, method = "abis")
 
 deconv_list <- list(timer = deconv_timer,
                     quantiseq = deconv_quantiseq,
                     epic = deconv_epic,
                     mcp = deconv_mcp,
-                    est = deconv_est)
+                    est = deconv_est,
+                    abis = deconv_abis)
 saveRDS(deconv_list, file.path(DIR_RDS, "immune_deconvolution_results.rds"))
 
 immune_mat <- lapply(deconv_list, function(deconv_df) {
@@ -838,99 +840,120 @@ ggplot(bar_multi, aes(x = sample, y = score, fill = cell_type)) +
         legend.text  = element_text(size = 7),
         plot.title   = element_text(face = "bold", hjust = 0.5))
 
-# Use estimate
-cell_mat <- immune_mat$est  # cell type x sample
-
-# Microbial CPM for RNA-only tumour samples
-samples_bac_tumour <- colnames(mtx_cpm_sp)[grep("^C", colnames(mtx_cpm_sp))]
-samples_shared     <- intersect(samples_rna_tumour, samples_bac_tumour)
-
-# Species filtering: present in >= 20% samples with CPM > 1
-sp_keep    <- rowSums(mtx_cpm_sp[, samples_shared] > 1) >= ceiling(0.2 * length(samples_shared))
-cpm_sp_sub <- mtx_cpm_sp[sp_keep, samples_shared]
-clr_sp_sub <- t(as.matrix(clr(t(cpm_sp_sub + 0.5))))
-
-# Align cell matrix to shared samples
-cell_mat_sub <- cell_mat[, samples_shared, drop = FALSE]
-
-n_shared <- length(samples_shared)
-
-cor_immune <- matrix(NA_real_,
-                     nrow = nrow(clr_sp_sub),
-                     ncol = nrow(cell_mat_sub),
-                     dimnames = list(rownames(clr_sp_sub), rownames(cell_mat_sub)))
-
-pval_immune <- cor_immune
-
-for (sp in rownames(clr_sp_sub)) {
-  for (ct in rownames(cell_mat_sub)) {
-    x <- clr_sp_sub[sp, samples_shared]
-    y <- cell_mat_sub[ct, samples_shared]
-    if (sd(y, na.rm = TRUE) < 1e-6) next
-    r <- cor(x, y, method = "spearman", use = "complete.obs")
-    t_stat <- r * sqrt((n_shared - 2) / (1 - r^2))
-    cor_immune[sp, ct]  <- r
-    pval_immune[sp, ct] <- 2 * pt(-abs(t_stat), df = n_shared - 2)
+for (meth in names(immune_mat)) {
+  cell_mat <- immune_mat[[meth]]
+  # Microbial CPM for RNA-only tumour samples
+  samples_bac_tumour <- colnames(mtx_cpm_sp)[grep("^C", colnames(mtx_cpm_sp))]
+  samples_shared     <- intersect(samples_rna_tumour, samples_bac_tumour)
+  
+  # Species filtering: present in >= 20% samples with CPM > 1
+  sp_keep    <- rowSums(mtx_cpm_sp[, samples_shared] > 1) >= ceiling(0.2 * length(samples_shared))
+  cpm_sp_sub <- mtx_cpm_sp[sp_keep, samples_shared]
+  clr_sp_sub <- t(as.matrix(clr(t(cpm_sp_sub + 0.5))))
+  
+  # Align cell matrix to shared samples
+  cell_mat_sub <- cell_mat[, samples_shared, drop = FALSE]
+  
+  n_shared <- length(samples_shared)
+  
+  cor_immune <- matrix(NA_real_,
+                       nrow = nrow(clr_sp_sub),
+                       ncol = nrow(cell_mat_sub),
+                       dimnames = list(rownames(clr_sp_sub), rownames(cell_mat_sub)))
+  
+  pval_immune <- cor_immune
+  
+  for (sp in rownames(clr_sp_sub)) {
+    for (ct in rownames(cell_mat_sub)) {
+      x <- clr_sp_sub[sp, samples_shared]
+      y <- cell_mat_sub[ct, samples_shared]
+      if (sd(y, na.rm = TRUE) < 1e-6) next
+      r <- cor(x, y, method = "spearman", use = "complete.obs")
+      t_stat <- r * sqrt((n_shared - 2) / (1 - r^2))
+      cor_immune[sp, ct]  <- r
+      pval_immune[sp, ct] <- 2 * pt(-abs(t_stat), df = n_shared - 2)
+    }
   }
+  
+  target_sp_in_imm <- intersect(target_sp$Species, rownames(cor_immune))
+  cat("Target species with correlation data:", length(target_sp_in_imm), "\n")
+  
+  cor_ht_target  <- cor_immune[target_sp_in_imm, , drop = FALSE]
+  pval_ht_target <- pval_immune[target_sp_in_imm, , drop = FALSE]
+  
+  sig_mat_target <- ifelse(pval_ht_target < 0.001, "***",
+                           ifelse(pval_ht_target < 0.01,  "**",
+                                  ifelse(pval_ht_target < 0.05,  "*", "")))
+  immune_col_fun <- colorRamp2(
+    c(-0.6, -0.3, 0, 0.3, 0.6),
+    c("#2166ac", "#92c5de", "white", "#f4a582", "#b2182b")
+  )
+  pdf(file.path(DIR_RES,  paste0("Heatmap_", meth, "_correlated_sp.pdf")), width = 8, height = 4)
+  draw(Heatmap(
+    t(cor_ht_target),
+    name              = "Spearman r",
+    col               = immune_col_fun,
+    cluster_rows      = TRUE,
+    cluster_columns   = TRUE,
+    show_row_names    = TRUE,
+    show_column_names = TRUE,
+    row_names_gp      = gpar(fontsize = 8),
+    column_names_gp   = gpar(fontsize = 8, fontface = "italic"),
+    column_names_rot  = 45,
+    cell_fun          = function(j, i, x, y, width, height, fill) {
+      if (sig_mat_target[j, i] != "")
+        grid.text(sig_mat_target[j, i], x, y, gp = gpar(fontsize = 7))
+    },
+    na_col            = "grey90",
+    use_raster        = FALSE
+  ))
+  dev.off()
+  
+  bubble_df_target <- as.data.frame(as.table(cor_ht_target)) %>%
+    setNames(c("species", "cell_type", "r")) %>%
+    mutate(
+      p     = as.vector(pval_ht_target),
+      sig   = p < 0.05 & abs(r) >= 0.3,
+      genus = gsub("_.*", "", species)
+    ) %>%
+    arrange(desc(abs(r)))
+  
+  # Rank cell_type by (n_positive - n_negative) among significant correlations
+  ct_order <- bubble_df_target %>%
+    filter(sig) %>%
+    group_by(cell_type) %>%
+    summarise(
+      n_pos = sum(r > 0),
+      n_neg = sum(r < 0),
+      score = n_pos - n_neg,
+      .groups = "drop"
+    ) %>%
+    right_join(
+      tibble(cell_type = unique(bubble_df_target$cell_type)),
+      by = "cell_type"
+    ) %>%
+    mutate(score = replace_na(score, 0)) %>%
+    arrange(score) %>%
+    pull(cell_type)
+  
+  bubble_df_target <- bubble_df_target %>%
+    mutate(cell_type = factor(cell_type, levels = ct_order))
+  p_bubble <-
+    ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
+    geom_point(aes(size = abs(r), fill = r), shape = 21,
+               color = "grey30", stroke = 0.4) +
+    scale_fill_distiller(palette = "RdBu", direction = -1,
+                         limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
+                         name    = "Spearman r") +
+    scale_size_continuous(range = c(1.5, 7), name = "|r|") +
+    labs(x = "Estimated scores", y = "Species") +
+    theme_bw(base_size = 11) +
+    coord_flip() +
+    theme(axis.text.x = element_text(angle = 45, color = 1, hjust = 1, size = 9),
+          axis.text.y = element_text(size = 8, color = 1),
+          panel.grid  = element_line(color = "grey93"))
+  
+  pdf(file.path(DIR_RES, paste0("Dotplot_", meth, "_correlated_sp.pdf")), width = 8, height = 6)
+  print(p_bubble)
+  dev.off()
 }
-
-saveRDS(list(r = cor_immune, p = pval_immune),
-        file.path(DIR_RDS, "species_estimate_correlation.rds"))
-
-target_sp_in_imm <- intersect(target_sp$Species, rownames(cor_immune))
-cat("Target species with correlation data:", length(target_sp_in_imm), "\n")
-
-cor_ht_target  <- cor_immune[target_sp_in_imm, c(1, 2, 4), drop = FALSE]
-pval_ht_target <- pval_immune[target_sp_in_imm, c(1, 2, 4), drop = FALSE]
-
-sig_mat_target <- ifelse(pval_ht_target < 0.001, "***",
-                         ifelse(pval_ht_target < 0.01,  "**",
-                                ifelse(pval_ht_target < 0.05,  "*", "")))
-immune_col_fun <- colorRamp2(
-  c(-0.6, -0.3, 0, 0.3, 0.6),
-  c("#2166ac", "#92c5de", "white", "#f4a582", "#b2182b")
-)
-pdf(file.path(DIR_RES, "Heatmap_estimate_correlated_sp.pdf"), width = 8, height = 4)
-draw(Heatmap(
-  t(cor_ht_target),
-  name              = "Spearman r",
-  col               = immune_col_fun,
-  cluster_rows      = TRUE,
-  cluster_columns   = TRUE,
-  show_row_names    = TRUE,
-  show_column_names = TRUE,
-  row_names_gp      = gpar(fontsize = 8),
-  column_names_gp   = gpar(fontsize = 8, fontface = "italic"),
-  column_names_rot  = 45,
-  cell_fun          = function(j, i, x, y, width, height, fill) {
-    if (sig_mat_target[j, i] != "")
-      grid.text(sig_mat_target[j, i], x, y, gp = gpar(fontsize = 7))
-  },
-  na_col            = "grey90",
-  use_raster        = FALSE
-))
-dev.off()
-
-bubble_df_target <- as.data.frame(as.table(cor_ht_target)) %>%
-  setNames(c("species", "cell_type", "r")) %>%
-  mutate(
-    p     = as.vector(pval_ht_target),
-    sig   = p < 0.05 & abs(r) >= 0.3,
-    genus = gsub("_.*", "", species)
-  ) %>%
-  arrange(desc(abs(r)))
-pdf(file.path(DIR_RES, "Dotplot_estimate_correlated_sp.pdf"), width = 8, height = 4)
-ggplot(bubble_df_target, aes(x = cell_type, y = species)) +
-  geom_point(aes(size = abs(r), fill = r), shape = 21,
-             color = "grey30", stroke = 0.4) +
-  scale_fill_distiller(palette = "RdBu", direction = -1,
-                       limits  = c(-1, 1) * max(abs(bubble_df_target$r)),
-                       name    = "Spearman r") +
-  scale_size_continuous(range = c(1.5, 7), name = "|r|") +
-  labs(x = "Estimated scores", y = "Species") +
-  theme_bw(base_size = 11) +
-  coord_flip() +
-  theme(axis.text.x = element_text(angle = 45, color = 1, hjust = 1, size = 9, face = "italic"),
-        axis.text.y = element_text(size = 8, color = 1),
-        panel.grid  = element_line(color = "grey93"))
-dev.off()
