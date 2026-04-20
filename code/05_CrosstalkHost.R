@@ -467,8 +467,25 @@ make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
   
   sp_levels_rev <- factor(rev(species_levels), levels = rev(species_levels))
   
+  # For dot bg
+  stripe_df <- data.frame(
+    species = levels(sp_levels_rev),
+    stripe  = seq_along(levels(sp_levels_rev)) %% 2 == 0,
+    stringsAsFactors = FALSE
+  )
+  stripe_df$species <- factor(stripe_df$species, levels = levels(sp_levels_rev))
+  
   # -- Dot panel --
   p_dot <- ggplot(df_cat, aes(x = x, y = species)) +
+    # Stripe layer: full-width grey bands on even rows
+    geom_tile(
+      data    = stripe_df,
+      aes(x = (length(genes_in_cat) + 1) / 2, y = species,
+          width = length(genes_in_cat), height = 1,
+          alpha = stripe),
+      fill = "grey85", inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    scale_alpha_manual(values = c("TRUE" = 0.4, "FALSE" = 0), guide = "none") +
     geom_point(aes(size = abs_cor, colour = direction), alpha = 0.8) +
     scale_colour_manual(
       values = c("Positive" = "#d7191c", "Negative" = "#2b83ba"),
@@ -478,7 +495,7 @@ make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
       range  = c(0.8, 3.5),
       limits = c(cor_threshold, fc_cap),
       breaks = c(0.3, 0.4, 0.5, 0.6),
-      name   = "|Spearman rs|",
+      name   = "|Spearman r|",
       guide  = "none"
     ) +
     scale_x_continuous(
@@ -497,7 +514,7 @@ make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
     theme(
       panel.grid.major.x = element_blank(),
       panel.grid.minor   = element_blank(),
-      panel.grid.major.y = element_line(colour = "grey92", linewidth = 0.3),
+      panel.grid.major.y = element_blank(),
       axis.text.y  = element_text(size = 6),
       plot.title   = element_text(size = 9, face = "bold", hjust = 0),
       plot.margin  = margin(2, 0, 2, 2)
@@ -552,10 +569,10 @@ p_lgd <- ggplot() +
     aes(x, y, size = sz), colour = "grey40"
   ) +
   scale_size_continuous(
-    range  = c(0.8, 3.5),
+    range  = c(0.3, 1.3),
     limits = c(cor_threshold, fc_cap),
     breaks = c(0.3, 0.4, 0.5, 0.6),
-    name   = "|Spearman r|"
+    name   = "|Spearman rs|"
   ) +
   # Colour legend
   geom_point(
