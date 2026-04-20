@@ -351,7 +351,7 @@ for (pg in colnames(prot_cor_sp)) {
   if (!is.na(sym) && sym %in% gene_use_sp) {
     for (sp in rownames(prot_mat_sp)) {
       if (is.na(prot_mat_sp[sp, sym]))
-        prot_mat_sp[sp, sym] <- prot_cor_sp[sp, pg]
+        prot_mat_sp[sp, sym] <- max(prot_mat_sp[sp, sym], prot_cor_sp[sp, pg], na.rm = TRUE)
     }
   }
 }
@@ -875,7 +875,7 @@ if (length(missing_genera) > 0) {
   ))
 }
 
-coord_sp <- data.frame(species = sp_order_sm,
+coord_sp <- data.frame(species = sp_order_s,
                        x_sp_coord = x_sp[sp_order_s],
                        stringsAsFactors = FALSE)
 coord_gene <- data.frame(gene = gene_order_s, 
