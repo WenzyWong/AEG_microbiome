@@ -45,7 +45,7 @@ mtx_htpm_filt <- read.csv(file.path(DIR_TAB, "gene_tpm_matrix.csv"), row.names =
   column_to_rownames("gene_name") %>%
   filter(rowMeans(.) > 1)
 
-mtx_cpm    <- readRDS(file.path(DIR_RDS, "gAEG_CPM_RNA_FiltMyco.rds"))
+mtx_cpm <- readRDS(file.path(DIR_RDS, "gAEG_CPM_RNA_FiltMyco.rds"))
 mtx_cpm_sp <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
 
 mtx_hpro <- readxl::read_excel(file.path(DIR_TAB, "SupData13ProteinIntensity.xlsx"))
@@ -293,7 +293,7 @@ pw_to_cat <- setNames(
 
 # Hallmark gene sets
 hallmark_sets <- msigdbr(species = "Homo sapiens", category = "H") %>%
-  filter(gs_name %in% target_pathways) %>%
+  filter(gs_name %in% pathways_ordered) %>%
   select(gs_name, gene_symbol) %>%
   { split(.$gene_symbol, .$gs_name) }
 
@@ -304,6 +304,7 @@ gsea_results_sp <- lapply(setNames(rownames(rna_cor_sp), rownames(rna_cor_sp)), 
     filter(padj < 0.05) %>%
     mutate(species = sp)
 })
+saveRDS(gsea_results_sp, file.path(DIR_RDS, "gsea_correlated_sp.rds"))
 
 core_genes_sp <- lapply(names(gsea_results_sp), function(sp) {
   res <- gsea_results_sp[[sp]]
@@ -422,6 +423,183 @@ draw(ht_sp, annotation_legend_list = list(
          title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
          direction = "vertical")
 ), merge_legend = FALSE)
+dev.off()
+
+# For supplementary: showing genes affected
+categories <- c("Metabolism", "Cell Cycle", "Metastasis", "Immune")
+species_levels <- rownames(rna_mat_sp_capped)
+cor_threshold  <- 0.3
+
+gene_cat <- data.frame(
+  gene     = gene_use_sp,
+  category = as.character(col_split_vec),
+  stringsAsFactors = FALSE
+)
+
+dot_df <- rna_mat_sp_capped %>%
+  as.data.frame() %>%
+  rownames_to_column("species") %>%
+  pivot_longer(-species, names_to = "gene", values_to = "cor") %>%
+  filter(!is.na(cor), abs(cor) > cor_threshold) %>%
+  left_join(gene_cat, by = "gene") %>%
+  mutate(
+    direction = ifelse(cor > 0, "Positive", "Negative"),
+    abs_cor   = abs(cor),
+    gene      = factor(gene, levels = gene_use_sp),
+    category  = factor(category, levels = categories),
+    species   = factor(species, levels = rev(species_levels))
+  )
+
+label_genes <- dot_df %>%
+  group_by(category, gene) %>%
+  summarise(n_sp = n_distinct(species), .groups = "drop") %>%
+  filter(n_sp >= 3) %>%
+  pull(gene) %>%
+  unique()
+
+make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
+  genes_in_cat <- gene_cat %>% filter(category == cat_name) %>% pull(gene)
+  df_cat       <- dot_df %>% filter(category == cat_name)
+  gene_pos     <- setNames(seq_along(genes_in_cat), genes_in_cat)
+  df_cat$x     <- gene_pos[as.character(df_cat$gene)]
+  
+  lab_genes <- intersect(genes_in_cat, label_genes)
+  
+  sp_levels_rev <- factor(rev(species_levels), levels = rev(species_levels))
+  
+  # -- Dot panel --
+  p_dot <- ggplot(df_cat, aes(x = x, y = species)) +
+    geom_point(aes(size = abs_cor, colour = direction), alpha = 0.8) +
+    scale_colour_manual(
+      values = c("Positive" = "#d7191c", "Negative" = "#2b83ba"),
+      guide  = "none"
+    ) +
+    scale_size_continuous(
+      range  = c(0.8, 3.5),
+      limits = c(cor_threshold, fc_cap),
+      breaks = c(0.3, 0.4, 0.5, 0.6),
+      name   = "|Spearman rs|",
+      guide  = "none"
+    ) +
+    scale_x_continuous(
+      limits = c(0.5, length(genes_in_cat) + 0.5),
+      breaks = gene_pos[lab_genes],
+      labels = lab_genes,
+      expand = expansion(mult = 0)
+    ) +
+    scale_y_discrete(
+      limits = levels(sp_levels_rev),
+      drop   = FALSE,
+      expand = expansion(add = 0.5)
+    ) +
+    labs(y = NULL, x = NULL, title = cat_name) +
+    theme_minimal(base_size = 8) +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank(),
+      panel.grid.major.y = element_line(colour = "grey92", linewidth = 0.3),
+      axis.text.y  = element_text(size = 6),
+      plot.title   = element_text(size = 9, face = "bold", hjust = 0),
+      plot.margin  = margin(2, 0, 2, 2)
+    )
+  
+  if (show_x_labels) {
+    p_dot <- p_dot +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 5, colour = "black"))
+  } else {
+    p_dot <- p_dot +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5, size = 5, colour = "black"))
+  }
+  
+  bar_cat <- df_cat %>%
+    group_by(species, direction) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    complete(species = factor(rev(species_levels), levels = rev(species_levels)),
+             direction = c("Positive", "Negative"),
+             fill = list(n = 0))
+  
+  p_bar <- ggplot(bar_cat, aes(x = n, y = species, fill = direction)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    scale_fill_manual(
+      values = c("Positive" = "#f4a582", "Negative" = "#92c5de"),
+      guide  = "none"
+    ) +
+    scale_y_discrete(
+      limits = levels(sp_levels_rev),
+      drop   = FALSE,
+      expand = expansion(add = 0.5)
+    ) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal(base_size = 8) +
+    theme(
+      axis.text.y        = element_blank(),
+      axis.ticks.y       = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor   = element_blank(),
+      plot.margin        = margin(2, 5, 2, 0)
+    )
+  
+  p_dot + p_bar + plot_layout(widths = c(6, 1))
+}
+
+row_panels <- lapply(categories, function(cat) make_row(cat))
+
+p_lgd <- ggplot() +
+  geom_point(
+    data = data.frame(x = 1:4, y = 1,
+                      sz = c(0.3, 0.4, 0.5, 0.6),
+                      lb = c("0.3", "0.4", "0.5", "0.6")),
+    aes(x, y, size = sz), colour = "grey40"
+  ) +
+  scale_size_continuous(
+    range  = c(0.8, 3.5),
+    limits = c(cor_threshold, fc_cap),
+    breaks = c(0.3, 0.4, 0.5, 0.6),
+    name   = "|Spearman r|"
+  ) +
+  # Colour legend
+  geom_point(
+    data = data.frame(x = c(6, 7), y = 1,
+                      dir = c("Positive", "Negative")),
+    aes(x, y, colour = dir), size = 3
+  ) +
+  scale_colour_manual(
+    values = c("Positive" = "#d7191c", "Negative" = "#2b83ba"),
+    name   = "Correlation"
+  ) +
+  # Bar legend
+  geom_tile(
+    data = data.frame(x = c(9, 10), y = 1,
+                      fill = c("Positive", "Negative")),
+    aes(x, y, fill = fill), width = 0.8, height = 0.5
+  ) +
+  scale_fill_manual(
+    values = c("Positive" = "#f4a582", "Negative" = "#92c5de"),
+    name   = "No. of genes"
+  ) +
+  theme_void() +
+  theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    legend.box       = "horizontal",
+    legend.key.size  = unit(4, "mm"),
+    legend.text      = element_text(size = 7),
+    legend.title     = element_text(size = 8, face = "bold")
+  ) +
+  guides(
+    size   = guide_legend(order = 1, override.aes = list(colour = "grey40")),
+    colour = guide_legend(order = 2, override.aes = list(size = 3)),
+    fill   = guide_legend(order = 3)
+  )
+
+lgd_grob <- cowplot::get_legend(p_lgd)
+
+final <- wrap_plots(row_panels, ncol = 1) /
+  wrap_elements(lgd_grob) +
+  plot_layout(heights = c(rep(1, length(categories)), 0.12))
+
+pdf(file.path(DIR_RES, "Landscape_species_pathway_dotplot.pdf"), width = 18, height = 14)
+print(final)
 dev.off()
 
 #####################################
@@ -820,33 +998,40 @@ for (method in names(immune_mat)) {
     rownames_to_column("sample") %>%
     pivot_longer(-sample, names_to = "cell_type", values_to = "score") %>%
     mutate(score = pmax(score, 0))
-
+  
   bar_df <- bar_df %>%
     group_by(sample) %>%
     mutate(prop = score / sum(score)) %>%
     ungroup()
-
-  ct_order <- bar_df %>%
+  
+  # Original cell type order (from input matrix row names)
+  ct_input_order <- rownames(immune_mat[[method]])
+  
+  # Stacking order: by total proportion descending
+  ct_stack_order <- bar_df %>%
     group_by(cell_type) %>%
     summarise(total_prop = sum(prop), .groups = "drop") %>%
     arrange(desc(total_prop)) %>%
     pull(cell_type)
-
-  top_ct <- ct_order[1]
+  
+  # Sample order: by proportion of the dominant cell type
+  top_ct <- ct_stack_order[1]
   sample_order <- bar_df %>%
     filter(cell_type == top_ct) %>%
     arrange(desc(prop)) %>%
     pull(sample)
   
+  # Factor levels control stacking (rev so highest on top)
   bar_df <- bar_df %>%
     mutate(
       sample    = factor(sample, levels = sample_order),
-      cell_type = factor(cell_type, levels = rev(ct_order))
+      cell_type = factor(cell_type, levels = rev(ct_stack_order))
     )
   
-  n_ct <- length(ct_order)
+  # Colors and legend follow input order
+  n_ct <- length(ct_input_order)
   ct_colors <- colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))(n_ct)
-  names(ct_colors) <- ct_order
+  names(ct_colors) <- ct_input_order
   
   pdf(file.path(DIR_RES, paste0("Barplot_", method, "_proportion.pdf")),
       width = 6, height = 4)
@@ -858,7 +1043,7 @@ for (method in names(immune_mat)) {
       scale_fill_manual(
         values = ct_colors,
         name   = "Cell type",
-        breaks = ct_order) +
+        breaks = ct_input_order) +
       labs(x = "Sample", y = "Proportion / Score",
            title = paste0("Immune deconvolution - ", method)) +
       theme_bw(base_size = 10) +
