@@ -10,7 +10,7 @@
 
   - 16S rRNA-seq
 
-  - RNA-seq
+  - Transcriptome (RNA-seq)
 
 ### Esophageal squamous cell carcinoma (ESCC)
 
@@ -18,7 +18,7 @@
 
 - Data structure:
 
-  - RNA-seq
+  - Transcriptome (RNA-seq)
 
 ### Adenocarcinoma of esophagogastric junction (AEG)
 
