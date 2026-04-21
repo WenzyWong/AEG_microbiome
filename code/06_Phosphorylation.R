@@ -24,8 +24,7 @@ set.seed(42)
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
-DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4/"
-DIR_SUP <- "/data/yzwang/project/AEG_seiri/results/S4/"
+DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F5_phospho/"
 
 ##########################
 # Preprocess original data
@@ -72,18 +71,20 @@ saveRDS(phospho, file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
 
 #################
 # Formal analysis
-phospho <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
+phospho   <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
+mtx_cpm   <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
+target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"),
+                      row.names = 1)
 
-mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
+sp_list <- target_sp$Species
+sp_list <- intersect(sp_list, rownames(mtx_cpm))
+
 common_sample <- intersect(colnames(phospho), colnames(mtx_cpm))
 common_tumour <- common_sample[grep("C", common_sample)]
 
 phos_tumour <- phospho[, common_tumour] %>%
   filter(rowMeans(.) != min(phospho))
-phos_tumour <- phos_tumour[!grepl("^-", rownames(phos_tumour)),]
-
-abund_ef <- data.frame(sample = common_tumour,
-                       t(mtx_cpm["Enterococcus_faecalis", common_tumour] / 1e+4))
+phos_tumour <- phos_tumour[!grepl("^-", rownames(phos_tumour)), ]
 
 phos_detect <- phos_tumour %>%
   as.data.frame() %>%
@@ -91,38 +92,63 @@ phos_detect <- phos_tumour %>%
   pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
   mutate(present = as.integer(intensity > 3.891872))
 
-#####################
-# Logistic regression
-logistic_ori <- phos_detect %>%
-  left_join(abund_ef, by = "sample") %>%
+# Pre-filter features by prevalence (shared across all species)
+feat_prev <- phos_detect %>%
   group_by(feature) %>%
-  nest() %>%
-  mutate(
-    n_present = map_int(data, ~ sum(.$present)),
-    n_absent  = map_int(data, ~ sum(.$present == 0)),
-    prop_present = n_present / (n_present + n_absent)
+  summarise(
+    n_present = sum(present),
+    n_absent  = sum(present == 0),
+    .groups   = "drop"
   ) %>%
-  filter(prop_present > 0.1, prop_present < 0.9) %>%
-  mutate(
-    fit = map(
-      data,
-      ~ glm(
-        present ~ Enterococcus_faecalis,
-        data = .,
-        family = binomial
+  mutate(prop_present = n_present / (n_present + n_absent)) %>%
+  filter(prop_present > 0.1, prop_present < 0.9)
+
+phos_detect_f <- phos_detect %>%
+  filter(feature %in% feat_prev$feature)
+
+#####################################
+# Logistic regression for each species
+run_logit_one_sp <- function(sp) {
+  abund <- data.frame(
+    sample = common_tumour,
+    abundance = as.numeric(mtx_cpm[sp, common_tumour]) / 1e+4
+  )
+  
+  phos_detect_f %>%
+    left_join(abund, by = "sample") %>%
+    group_by(feature) %>%
+    nest() %>%
+    mutate(
+      fit = map(
+        data,
+        ~ tryCatch(
+          glm(present ~ abundance, data = .x, family = binomial),
+          error = function(e) NULL
+        )
       )
-    ),
-    converged = map_lgl(fit, ~ .$converged),
-    tidied = map(fit, tidy)
-  ) %>%
-  filter(converged) %>%
-  unnest(tidied) %>%
-  filter(term == "Enterococcus_faecalis") %>%
-  mutate(OR = exp(estimate)) %>%
-  select(feature, estimate, std.error, OR, p.value, n_present, n_absent)
+    ) %>%
+    filter(!map_lgl(fit, is.null)) %>%
+    mutate(
+      converged = map_lgl(fit, ~ .$converged),
+      tidied    = map(fit, broom::tidy)
+    ) %>%
+    filter(converged) %>%
+    unnest(tidied) %>%
+    filter(term == "abundance") %>%
+    ungroup() %>%
+    mutate(
+      OR      = exp(estimate),
+      padj    = p.adjust(p.value, method = "BH"),
+      species = sp
+    ) %>%
+    select(species, feature, estimate, std.error, OR, p.value, padj)
+}
 
-sig_discrete <- logistic_ori %>%
-  mutate(padj = p.adjust(p.value, method = "BH")) %>%
-  filter(padj < 0.05)
+logistic_all <- map_dfr(sp_list, run_logit_one_sp)
 
-write.csv(sig_discrete, file.path(DIR_TAB, "Phospho_discrete_significance.csv"))
+sig_all <- logistic_all %>% filter(padj < 0.05)
+
+write.csv(logistic_all, file.path(DIR_TAB, "Phospho_discrete_logit_allSp.csv"),
+          row.names = FALSE)
+write.csv(sig_all, file.path(DIR_TAB, "Phospho_discrete_significance_allSp.csv"),
+          row.names = FALSE)
