@@ -26,6 +26,8 @@
 
 - Data structure (103 patient samples with paired tumour and normal tissues):
 
-  - RNA-seq
+  - Transcriptome (RNA-seq)
+
+  - Proteome (MS)
 
   - Phosphoproteome (MS)
