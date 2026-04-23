@@ -171,11 +171,14 @@ k_site <- 6
 site_cluster <- cutree(hc_row, k = k_site)
 
 hc_col <- hclust(as.dist(1 - cor(mat_f)), method = "ward.D2")
-k_sp   <- 4
+k_sp <- 4
 sp_cluster <- cutree(hc_col, k = k_sp)
 
 table(site_cluster)
 table(sp_cluster)
+
+write.csv(site_cluster, file.path(DIR_TAB, "Phospho_site_clusters.csv"))
+write.csv(sp_cluster, file.path(DIR_TAB, "Phospho_species_clusters.csv"))
 
 # UMAP: species as points
 sp_umap <- umap(
@@ -194,13 +197,13 @@ sp_umap_df <- data.frame(
 
 pdf(file.path(DIR_FIG, "UMAP_species_by_phosphoProfile.pdf"),
     width = 7, height = 6)
-ggplot(sp_umap_df, aes(UMAP1, UMAP2, color = cluster, size = n_sig)) +
-  geom_point() +
+ggplot(sp_umap_df, aes(UMAP1, UMAP2, color = cluster)) +
+  geom_point(aes(size = n_sig)) +
   scale_colour_manual(values = paletteer_d("ggsci::default_nejm")[c(2:5)]) +
-  ggrepel::geom_text_repel(aes(label = species), size = 3, max.overlaps = 30) +
+  ggrepel::geom_text_repel(aes(label = species), size = 3, max.overlaps = Inf) +
   scale_size_continuous(range = c(2, 8)) +
   theme_bw(base_size = 11) +
-  labs(title = "Species embedding by phosphosite-association profile")
+  theme(axis.text = element_text(colour = 1))
 dev.off()
 
 # UMAP: phosphosites as points
@@ -250,9 +253,12 @@ ggplot(pc_df, aes(PC1, PC2, color = cluster)) +
     segment.color = "grey60",
     segment.size  = 0.3
   ) +
-  theme_minimal(base_size = 11) +
+  theme_bw(base_size = 11) +
+  scale_colour_manual(values = paletteer_d("ggsci::signature_substitutions_cosmic")) +
   labs(
     x = sprintf("PC1 (%.1f%%)", var_exp[1] * 100),
     y = sprintf("PC2 (%.1f%%)", var_exp[2] * 100)
   )
 dev.off()
+
+
