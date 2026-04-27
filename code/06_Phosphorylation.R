@@ -12,6 +12,8 @@ library(broom)
 library(uwot)       # UMAP
 library(Rtsne)
 library(paletteer)
+library(OmnipathR)
+library(ggtern)
 
 set.seed(42)
 
@@ -63,8 +65,7 @@ mtx_cpm   <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
 target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"),
                       row.names = 1)
 
-sp_list <- target_sp$Species
-sp_list <- intersect(sp_list, rownames(mtx_cpm))
+sp_list <- intersect(target_sp$Species, rownames(mtx_cpm))
 
 common_sample <- intersect(colnames(phospho), colnames(mtx_cpm))
 common_tumour <- common_sample[grep("C", common_sample)]
@@ -156,15 +157,6 @@ keep_feat <- rowSums(mat != 0) >= 1
 mat_f     <- mat[keep_feat, , drop = FALSE]
 dim(mat_f)
 
-# Cluster based on heatmap
-ann_col <- data.frame(
-  n_sig_feat = colSums(mat_f != 0),
-  row.names  = colnames(mat_f)
-)
-
-lim <- quantile(abs(mat_f[mat_f != 0]), 0.98)
-brk <- seq(-lim, lim, length.out = 101)
-
 # Delegate clusters
 hc_row <- hclust(as.dist(1 - cor(t(mat_f))), method = "ward.D2")
 k_site <- 6
@@ -198,6 +190,11 @@ sp_umap_df <- data.frame(
 pdf(file.path(DIR_FIG, "UMAP_species_by_phosphoProfile.pdf"),
     width = 7, height = 6)
 ggplot(sp_umap_df, aes(UMAP1, UMAP2, color = cluster)) +
+  stat_ellipse(aes(group = cluster),
+               type     = "norm",
+               level    = 0.95,
+               linetype = "dashed",
+               linewidth = 0.5) +
   geom_point(aes(size = n_sig)) +
   scale_colour_manual(values = paletteer_d("ggsci::default_nejm")[c(2:5)]) +
   ggrepel::geom_text_repel(aes(label = species), size = 3, max.overlaps = Inf) +
@@ -261,4 +258,148 @@ ggplot(pc_df, aes(PC1, PC2, color = cluster)) +
   )
 dev.off()
 
+############
+# Annotation
+# Parse phosphosite feature names
+site_parsed <- data.frame(feature = rownames(mat_f)) %>%
+  separate(feature, into = c("gene", "site"), sep = "_",
+           remove = FALSE, extra = "merge") %>%
+  mutate(
+    residue  = str_extract(site, "^[STY]"),
+    position = as.integer(str_extract(site, "(?<=^[STY])\\d+"))
+  ) %>%
+  dplyr::select(feature, gene, residue, position) %>%
+  filter(!is.na(gene), !is.na(residue), !is.na(position))
 
+# Use the gene that bears the phosphosite
+gene_pathway <- import_omnipath_annotations(
+  resources = c("SignaLink_pathway", "NetPath"),
+  proteins  = unique(site_parsed$gene)
+) %>%
+  filter(label == "pathway") %>%
+  transmute(gene = genesymbol, pathway = value) %>%
+  distinct()
+
+site_anno <- site_parsed %>%
+  inner_join(gene_pathway, by = "gene", relationship = "many-to-many") %>%
+  dplyr::select(feature, gene, pathway) %>%
+  distinct()
+
+write.csv(site_anno, file.path(DIR_TAB, "Phosphosite_pathway_annotation.csv"),
+          row.names = FALSE)
+
+sp_cluster_df <- data.frame(
+  species    = names(sp_cluster),
+  sp_cluster = as.integer(sp_cluster)
+)
+
+cluster_pathway_score <- mat_df %>%
+  filter(p.value < 0.05) %>%
+  inner_join(site_anno, by = "feature", relationship = "many-to-many") %>%
+  inner_join(sp_cluster_df, by = "species") %>%
+  group_by(sp_cluster, pathway) %>%
+  summarise(
+    score   = sum(abs(log2OR)),
+    n_sites = n_distinct(feature),
+    n_sp    = n_distinct(species),
+    .groups = "drop"
+  ) %>%
+  filter(n_sites >= 3)
+
+# Pick top pathway per cluster
+cluster_label_df <- cluster_pathway_score %>%
+  group_by(sp_cluster) %>%
+  arrange(desc(score)) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+assigned <- character(0)
+top_per_cluster <- cluster_label_df %>%
+  group_by(sp_cluster) %>%
+  group_modify(~ {
+    pick <- .x %>%
+      filter(!pathway %in% assigned) %>%
+      slice_head(n = 1)
+    if (nrow(pick) > 0) assigned <<- c(assigned, pick$pathway)
+    pick
+  }) %>%
+  ungroup() %>%
+  dplyr::select(sp_cluster, pathway, score, n_sites)
+
+cluster_label_vec <- setNames(top_per_cluster$pathway,
+                              top_per_cluster$sp_cluster)
+print(top_per_cluster)
+
+# PCA with cluster hulls
+pc_df <- pc_df %>%
+  mutate(
+    sp_cluster = as.integer(as.character(cluster)),
+    cluster_lab = paste0("Cluster ", sp_cluster, ": ",
+                         cluster_label_vec[as.character(sp_cluster)])
+  )
+
+hub_colors <- paletteer_d("ggsci::default_nejm")[2:(1 + length(unique(pc_df$cluster)))]
+
+pdf(file.path(DIR_FIG, "PCA_species_clustered.pdf"), width = 8, height = 6.5)
+ggplot(pc_df, aes(PC1, PC2, color = cluster, fill = cluster)) +
+  geom_mark_hull(
+    aes(label = cluster_lab, group = cluster),
+    concavity      = 5,
+    alpha          = 0.12,
+    expand         = unit(4, "mm"),
+    label.fontsize = 9,
+    label.buffer   = unit(8, "mm"),
+    con.cap        = 0,
+    con.size       = 0.4
+  ) +
+  geom_point(size = 3) +
+  ggrepel::geom_text_repel(aes(label = species), size = 2.8,
+                           max.overlaps = Inf, color = "black",
+                           segment.size = 0.3, segment.color = "grey60") +
+  scale_colour_manual(values = hub_colors) +
+  scale_fill_manual  (values = hub_colors) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank()) +
+  labs(
+    x = sprintf("PC1 (%.1f%%)", var_exp[1] * 100),
+    y = sprintf("PC2 (%.1f%%)", var_exp[2] * 100)
+  )
+dev.off()
+
+sp_umap_df <- sp_umap_df %>%
+  mutate(
+    sp_cluster  = as.integer(as.character(cluster)),
+    cluster_lab = paste0("Cluster ", sp_cluster, ": ",
+                         cluster_label_vec[as.character(sp_cluster)])
+  )
+
+hub_colors <- paletteer_d("ggsci::default_nejm")[2:(1 + length(unique(sp_umap_df$cluster)))]
+
+pdf(file.path(DIR_FIG, "UMAP_species_clustered.pdf"), width = 8, height = 6.5)
+ggplot(sp_umap_df, aes(UMAP1, UMAP2, color = cluster, fill = cluster)) +
+  geom_mark_hull(
+    aes(label = cluster_lab, group = cluster),
+    concavity      = 5,
+    alpha          = 0.12,
+    expand         = unit(4, "mm"),
+    label.fontsize = 9,
+    label.buffer   = unit(8, "mm"),
+    con.cap        = 0,
+    con.size       = 0.4
+  ) +
+  geom_point(aes(size = n_sig)) +
+  ggrepel::geom_text_repel(aes(label = species), size = 2.8,
+                           max.overlaps = Inf, color = "black",
+                           segment.size = 0.3, segment.color = "grey60") +
+  scale_colour_manual(values = hub_colors) +
+  scale_fill_manual  (values = hub_colors) +
+  scale_size_continuous(range = c(2, 6)) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank()) +
+  labs(
+    x = "UMAP1",
+    y = "UMAP2"
+  )
+dev.off()
