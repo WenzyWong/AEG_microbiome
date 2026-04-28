@@ -466,6 +466,3 @@ ggplot(stacked_df, aes(y = species, x = prop, fill = grp)) +
         strip.text.y = element_text(angle = 0, face = "bold")) +
   labs(x = "Proportion", y = NULL)
 dev.off()
-
-###############
-# Drug response
