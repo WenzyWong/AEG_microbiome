@@ -13,14 +13,16 @@ library(uwot)       # UMAP
 library(Rtsne)
 library(paletteer)
 library(OmnipathR)
-library(ggtern)
+library(forcats)
+library(deldir)
+library(sf)
 
 set.seed(42)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
-DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F5_phospho/"
+DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4_phospho/"
 
 ##########################
 # Preprocess original data
@@ -330,43 +332,6 @@ cluster_label_vec <- setNames(top_per_cluster$pathway,
                               top_per_cluster$sp_cluster)
 print(top_per_cluster)
 
-# PCA with cluster hulls
-pc_df <- pc_df %>%
-  mutate(
-    sp_cluster = as.integer(as.character(cluster)),
-    cluster_lab = paste0("Cluster ", sp_cluster, ": ",
-                         cluster_label_vec[as.character(sp_cluster)])
-  )
-
-hub_colors <- paletteer_d("ggsci::default_nejm")[2:(1 + length(unique(pc_df$cluster)))]
-
-pdf(file.path(DIR_FIG, "PCA_species_clustered.pdf"), width = 8, height = 6.5)
-ggplot(pc_df, aes(PC1, PC2, color = cluster, fill = cluster)) +
-  geom_mark_hull(
-    aes(label = cluster_lab, group = cluster),
-    concavity      = 5,
-    alpha          = 0.12,
-    expand         = unit(4, "mm"),
-    label.fontsize = 9,
-    label.buffer   = unit(8, "mm"),
-    con.cap        = 0,
-    con.size       = 0.4
-  ) +
-  geom_point(size = 3) +
-  ggrepel::geom_text_repel(aes(label = species), size = 2.8,
-                           max.overlaps = Inf, color = "black",
-                           segment.size = 0.3, segment.color = "grey60") +
-  scale_colour_manual(values = hub_colors) +
-  scale_fill_manual  (values = hub_colors) +
-  theme_bw(base_size = 11) +
-  theme(legend.position = "none",
-        panel.grid.minor = element_blank()) +
-  labs(
-    x = sprintf("PC1 (%.1f%%)", var_exp[1] * 100),
-    y = sprintf("PC2 (%.1f%%)", var_exp[2] * 100)
-  )
-dev.off()
-
 sp_umap_df <- sp_umap_df %>%
   mutate(
     sp_cluster  = as.integer(as.character(cluster)),
@@ -376,30 +341,131 @@ sp_umap_df <- sp_umap_df %>%
 
 hub_colors <- paletteer_d("ggsci::default_nejm")[2:(1 + length(unique(sp_umap_df$cluster)))]
 
-pdf(file.path(DIR_FIG, "UMAP_species_clustered.pdf"), width = 8, height = 6.5)
-ggplot(sp_umap_df, aes(UMAP1, UMAP2, color = cluster, fill = cluster)) +
-  geom_mark_hull(
-    aes(label = cluster_lab, group = cluster),
-    concavity      = 5,
-    alpha          = 0.12,
-    expand         = unit(4, "mm"),
-    label.fontsize = 9,
-    label.buffer   = unit(8, "mm"),
-    con.cap        = 0,
-    con.size       = 0.4
+x_range <- range(sp_umap_df$UMAP1)
+y_range <- range(sp_umap_df$UMAP2)
+x_pad   <- diff(x_range) * 0.08
+y_pad   <- diff(y_range) * 0.08
+
+outline <- data.frame(
+  x = c(x_range[1] - x_pad, x_range[2] + x_pad,
+        x_range[2] + x_pad, x_range[1] - x_pad),
+  y = c(y_range[1] - y_pad, y_range[1] - y_pad,
+        y_range[2] + y_pad, y_range[2] + y_pad)
+)
+
+arrow_spec <- arrow(length = unit(0.25, "cm"), type = "closed")
+
+centroids <- sp_umap_df %>%
+  group_by(cluster) %>%
+  summarise(UMAP1 = mean(UMAP1), UMAP2 = mean(UMAP2), .groups = "drop")
+
+bbox <- c(
+  xmin = x_range[1] - x_pad, xmax = x_range[2] + x_pad,
+  ymin = y_range[1] - y_pad, ymax = y_range[2] + y_pad
+)
+
+dd <- deldir(centroids$UMAP1, centroids$UMAP2,
+             rw = c(bbox["xmin"], bbox["xmax"], bbox["ymin"], bbox["ymax"]))
+tiles <- tile.list(dd)
+
+vor_df <- bind_rows(lapply(seq_along(tiles), function(i) {
+  tile <- tiles[[i]]
+  data.frame(
+    UMAP1   = tile$x,
+    UMAP2   = tile$y,
+    cluster = centroids$cluster[i],
+    group   = i
+  )
+}))
+
+pdf(file.path(DIR_FIG, "UMAP_species_clustered.pdf"), width = 6.5, height = 6)
+ggplot(sp_umap_df, aes(UMAP1, UMAP2)) +
+  geom_polygon(data = vor_df, aes(UMAP1, UMAP2, fill = cluster, group = group),
+               alpha = 0.2, color = NA) +
+  geom_point(aes(color = cluster, size = n_sig)) +
+  ggrepel::geom_text_repel(
+    aes(label = species), size = 2.8,
+    max.overlaps  = Inf, color = "black",
+    segment.size  = 0.3, segment.color = "grey60"
   ) +
-  geom_point(aes(size = n_sig)) +
-  ggrepel::geom_text_repel(aes(label = species), size = 2.8,
-                           max.overlaps = Inf, color = "black",
-                           segment.size = 0.3, segment.color = "grey60") +
+  annotate(
+    "segment",
+    x = x_range[1] - x_pad, xend = x_range[2] + x_pad,
+    y = y_range[1] - y_pad, yend = y_range[1] - y_pad,
+    arrow = arrow_spec, linewidth = 0.6, color = "black"
+  ) +
+  annotate(
+    "segment",
+    x = x_range[1] - x_pad, xend = x_range[1] - x_pad,
+    y = y_range[1] - y_pad, yend = y_range[2] + y_pad,
+    arrow = arrow_spec, linewidth = 0.6, color = "black"
+  ) +
   scale_colour_manual(values = hub_colors) +
   scale_fill_manual  (values = hub_colors) +
   scale_size_continuous(range = c(2, 6)) +
-  theme_bw(base_size = 11) +
-  theme(legend.position = "none",
-        panel.grid.minor = element_blank()) +
-  labs(
-    x = "UMAP1",
-    y = "UMAP2"
-  )
+  coord_cartesian(
+    xlim = c(x_range[1] - x_pad, x_range[2] + x_pad),
+    ylim = c(y_range[1] - y_pad, y_range[2] + y_pad),
+    clip = "off"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position  = "none",
+    axis.line        = element_blank(),
+    axis.ticks       = element_blank(),
+    axis.text        = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border     = element_blank()
+  ) +
+  labs(x = "UMAP 1", y = "UMAP 2")
 dev.off()
+
+# Stack plot
+site_grp_vec <- cutree(hc_row, k = 6)
+
+assigned <- character(0)
+grp_label <- data.frame(feature = names(site_grp_vec), grp = as.integer(site_grp_vec)) %>%
+  inner_join(site_anno, by = "feature", relationship = "many-to-many") %>%
+  count(grp, pathway, name = "n") %>%
+  group_by(grp) %>%
+  arrange(desc(n)) %>%
+  group_modify(~ {
+    pick <- .x %>% filter(!pathway %in% assigned) %>% slice_head(n = 1)
+    if (nrow(pick) > 0) assigned <<- c(assigned, pick$pathway)
+    pick
+  }) %>%
+  ungroup()
+
+label_vec <- setNames(grp_label$pathway, as.character(grp_label$grp))
+print(grp_label)
+
+stacked_df <- mat_df %>%
+  filter(p.value < 0.05) %>%
+  inner_join(data.frame(feature = names(site_grp_vec), grp = as.integer(site_grp_vec)),
+             by = "feature") %>%
+  group_by(species, grp) %>%
+  summarise(score = sum(abs(log2OR)), .groups = "drop_last") %>%
+  mutate(prop = score / sum(score)) %>%
+  ungroup() %>%
+  inner_join(sp_cluster_df, by = "species") %>%
+  mutate(
+    grp = factor(grp, labels = paste0("G", sort(unique(grp)), ": ",
+                                      label_vec[as.character(sort(unique(grp)))])),
+    species = fct_reorder(species, sp_cluster)
+  )
+
+pdf(file.path(DIR_FIG, "Stacked_pathway_composition.pdf"),
+    width = 8, height = max(5, length(unique(stacked_df$species)) * 0.25))
+ggplot(stacked_df, aes(y = species, x = prop, fill = grp)) +
+  geom_col(width = 0.8) +
+  facet_grid(sp_cluster ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_brewer(palette = "Set2", name = "Pathway group") +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        strip.text.y = element_text(angle = 0, face = "bold")) +
+  labs(x = "Proportion", y = NULL)
+dev.off()
+
+###############
+# Drug response
