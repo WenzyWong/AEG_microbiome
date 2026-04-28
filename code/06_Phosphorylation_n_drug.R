@@ -16,6 +16,11 @@ library(OmnipathR)
 library(forcats)
 library(deldir)
 library(sf)
+library(ComplexHeatmap)
+library(psych)
+library(ggplot2)
+library(RColorBrewer)
+library(ggvenn)
 
 set.seed(42)
 
@@ -465,4 +470,358 @@ ggplot(stacked_df, aes(y = species, x = prop, fill = grp)) +
   theme(panel.grid = element_blank(),
         strip.text.y = element_text(angle = 0, face = "bold")) +
   labs(x = "Proportion", y = NULL)
+dev.off()
+
+###############
+# Drug response
+# IDWAS
+# Load data
+idwas_drug <- readxl::read_excel(file.path(DIR_TAB, "IDWAS_Supplemental_Table_S2.xlsx"), 
+                                 skip = 1) %>%
+  select(Drug)
+
+idwas_mtx <- readRDS(file.path(DIR_RDS, "drugPred_Mtx.rds"))
+idwas_tumour_mtx <- idwas_mtx[ , grep("C", colnames(idwas_mtx))]
+
+abund <- sort(apply(mtx_cpm[, grep("C", colnames(mtx_cpm))], 
+                    MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
+abund_mtx_tumour <- mtx_cpm[target_sp$Species, grep("C", colnames(mtx_cpm))] / 1e+4
+
+gdsc_target <- read.csv(file.path(DIR_TAB, "Drug_list2023.csv"))
+
+# Plot predicted drug responses: idwas
+draw_idwas_mtx <- scale(idwas_mtx, center = T)
+col_zs <- circlize::colorRamp2(c(-10, 0, 10), c("#2166AC", "white", "#B2182B"))
+pdf(file.path(DIR_SUP, "A_heatmap_idwas_samples.pdf"), width = 6, height = 10)
+Heatmap(draw_idwas_mtx, show_column_names = F, 
+        name = "Scaled response", column_title = "Samples",
+        column_title_side = "bottom",
+        col = col_zs,
+        row_names_gp = grid::gpar(fontsize = 6))
+dev.off()
+
+rm_idwas <- c()
+for (i in 1:nrow(idwas_mtx)) {
+  if (length(na.omit(idwas_mtx[i, ])) < 0.5 * ncol(idwas_mtx)) {
+    rm_idwas <- c(rm_idwas, i)
+  }
+}
+idwas_mtx <- idwas_mtx[-rm_idwas, ]
+dim(idwas_mtx)
+
+# CARE
+anno_dt <- rtracklayer::import("/data/yzwang/reference/gencode_ref/gencode_human_annotation.gtf") %>%
+  as.data.frame()
+coding_gene_list <- anno_dt$gene_name[anno_dt$gene_type == "protein_coding"] %>% unique(.)
+length(coding_gene_list)
+rm(anno_dt)
+
+# Pre-processing human expression matrix
+hexp_tpm <- readRDS(paste0(DIR_RDS, "AEG_humanTPM_Symbol.rds"))
+hexp_tpm <- hexp_tpm[rownames(hexp_tpm) %in% coding_gene_list, ]
+hexp_tpm <- hexp_tpm[rowMeans(hexp_tpm) > 1, ]
+dim(hexp_tpm)
+
+hexp_norm <- t(apply(hexp_tpm, 1, function(gene_values) {
+  (gene_values - mean(gene_values, na.rm = TRUE)) / sd(gene_values, na.rm = TRUE)
+}))
+gene_vars <- apply(hexp_norm, 1, var, na.rm = T)
+top_var_genes <- names(gene_vars)[gene_vars > median(gene_vars, na.rm = TRUE)]
+hexp_filt <- hexp_norm[top_var_genes, ]
+dim(hexp_filt)
+
+# Importing CARE scores
+care_score <- read.table(file.path(DIR_TAB, "CARE_GDSC"), header = T, fill = T) %>%
+  filter(Type == "t", )
+
+meta_cols <- c("Response", "Type", "Target")
+gene_cols <- setdiff(colnames(care_score), meta_cols)
+
+care_score[, gene_cols] <- lapply(care_score[, gene_cols], function(x) {
+  as.numeric(as.character(x))
+})
+
+care_aggregated <- care_score %>%
+  group_by(Response) %>%
+  summarise(
+    Type = Type[1],
+    Target = paste(Target, collapse = "/"),
+    across(all_of(gene_cols), ~mean(.x, na.rm = TRUE)),
+    .groups = 'drop'
+  )
+
+common_genes <- intersect(rownames(hexp_filt), colnames(care_score))
+length(common_genes)
+
+care_mtx <- care_aggregated[ , common_genes]
+rownames(care_mtx) <- care_aggregated$Response
+
+hexp_filt <- hexp_filt[common_genes, ]
+
+# Using gene expression and CARE matrix to predict drug response per patient
+n_top_genes <- 50
+
+drug_prediction_models <- list()
+care_feature_predictions <- list()
+
+for(drug in rownames(care_mtx)) {
+  # Select top genes by absolute CARE score
+  drug_care <- care_mtx[drug, ]
+  common_genes <- intersect(rownames(hexp_filt), names(drug_care))
+  drug_care_subset <- drug_care[common_genes]
+  
+  top_gene_indices <- order(unlist(abs(drug_care_subset)), decreasing = TRUE)[1:n_top_genes]
+  top_genes <- names(drug_care_subset)[top_gene_indices]
+  
+  # Feature matrix: patients × top genes
+  feature_matrix <- t(hexp_filt[top_genes, , drop = FALSE])
+  
+  model_data <- as.data.frame(feature_matrix)
+  model_data$Sample <- rownames(feature_matrix)
+  
+  pca_result <- prcomp(feature_matrix, scale. = TRUE, center = TRUE)
+  n_pcs <- min(10, ncol(pca_result$x))
+  pc_scores <- pca_result$x[, 1:n_pcs]
+  
+  # Weights: variance explained by each PC
+  variance_explained <- pca_result$sdev[1:n_pcs]^2 / sum(pca_result$sdev^2)
+  predicted_response <- pc_scores %*% variance_explained
+  
+  care_feature_predictions[[drug]] <- data.frame(
+    Drug = drug,
+    Sample = colnames(hexp_filt),
+    Predicted_Response = as.numeric(predicted_response),
+    N_Features = length(top_genes),
+    stringsAsFactors = FALSE
+  )
+  
+  drug_prediction_models[[drug]] <- list(
+    top_genes = top_genes,
+    pca_model = pca_result,
+    variance_explained = variance_explained
+  )
+}
+care_feature_pred_df <- bind_rows(care_feature_predictions)
+
+care_feature_pred_df <- care_feature_pred_df %>%
+  group_by(Drug) %>%
+  mutate(Predicted_Response_Scaled = scale(Predicted_Response)[,1]) %>%
+  ungroup()
+
+# Convert long format to matrix: drugs × samples
+care_pred_matrix <- care_feature_pred_df %>%
+  dplyr::select(Drug, Sample, Predicted_Response_Scaled) %>%
+  tidyr::pivot_wider(
+    names_from = Sample,
+    values_from = Predicted_Response_Scaled
+  ) %>%
+  tibble::column_to_rownames("Drug") %>%
+  as.matrix()
+dim(care_pred_matrix)
+care_pred_matrix <- -care_pred_matrix # To align with IDWAS
+
+write.csv(care_pred_matrix, file.path(DIR_TAB, "CARE_predicted_responses.csv"))
+
+pdf(file.path(DIR_SUP, "Heatmap_care_samples.pdf"), width = 8, height = 10)
+Heatmap(care_pred_matrix, name = "CARE response", show_column_names = F)
+dev.off()
+
+# Target species
+# in idwas
+all(colnames(idwas_mtx) == colnames(abund_mtx))
+cor_sp_idwas <- psych::corr.test(t(as.matrix(idwas_mtx)), t(as.matrix(abund_mtx)),
+                                 method = "spearman")
+cor_r_idwas <- cor_sp_idwas$r
+cor_p_idwas <- cor_sp_idwas$p.adj
+
+# Drug name normalisation
+rownames(cor_r_idwas) <- gsub("\\.", "-", rownames(cor_r_idwas))
+rownames(cor_p_idwas) <- gsub("\\.", "-", rownames(cor_p_idwas))
+
+drug_universe <- rownames(cor_r_idwas)
+
+pathway_all <- gdsc_target[gdsc_target$Name %in% drug_universe,
+                           c("Name", "Target.pathway")]
+pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+potent_syn  <- setdiff(drug_universe, pathway_all$Name)
+
+rename_map <- setNames(potent_syn, potent_syn)
+notfound   <- c()
+for (i in seq_along(potent_syn)) {
+  hit <- grep(potent_syn[i], gdsc_target$Synonyms)
+  tmp_name <- gdsc_target$Name[hit][1]
+  tmp_path <- gdsc_target$Target.pathway[hit][1]
+  if (is.na(tmp_name)) {
+    notfound <- c(notfound, potent_syn[i])
+    pathway_all <- rbind(pathway_all, c(potent_syn[i], "Unannotated"))
+  } else {
+    rename_map[potent_syn[i]] <- tmp_name
+    pathway_all <- rbind(pathway_all, c(tmp_name, tmp_path))
+  }
+}
+
+# Apply rename
+apply_rename <- function(m, map) {
+  rn <- rownames(m)
+  rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
+  rownames(m) <- rn
+  m
+}
+cor_r_idwas <- apply_rename(cor_r_idwas, rename_map)
+cor_p_idwas <- apply_rename(cor_p_idwas, rename_map)
+
+rownames(pathway_all) <- pathway_all$Name
+pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+
+# Filter
+sig_in <- function(R, P) {
+  apply(R, 1, function(x) any(abs(x) > 0.2, na.rm = TRUE)) &
+    apply(P, 1, function(x) any(x < 0.05, na.rm = TRUE))
+}
+keep <- rownames(cor_r_idwas)[sig_in(cor_r_idwas, cor_p_idwas)]
+
+# FDA-style filter from original code: drop rows containing "-" or digits, keep those with lowercase letters
+fda_filter <- function(x) {
+  x <- x[!grepl("\\-|[1-9]", x)]
+  x <- x[grepl("[a-z]", x)]
+  x
+}
+keep <- fda_filter(keep)
+keep <- intersect(keep, rownames(cor_r_idwas))
+
+cor_r_idwas <- cor_r_idwas[keep, , drop = FALSE]
+cor_p_idwas <- cor_p_idwas[keep, , drop = FALSE]
+
+# Right pathway annotation
+rownames(pathway_all) <- pathway_all$Name
+pathway_vec <- pathway_all[keep, "Target.pathway"]
+
+col_pathway <- c(paletteer_d("ggsci::default_jco"),
+                 paletteer_d("pals::kelly"))[seq_along(unique(pathway_vec))]
+names(col_pathway) <- unique(pathway_vec)
+col_pathway[is.na(names(col_pathway)) | names(col_pathway) == "Unannotated"] <- "grey80"
+
+right_anno <- rowAnnotation(
+  Pathway = pathway_vec,
+  col = list(Pathway = col_pathway),
+  show_annotation_name = TRUE
+)
+
+# Top annotation
+build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
+  neg_v <- vapply(seq_len(ncol(R)), function(i)
+    sum(R[, i] < -0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
+  pos_v <- vapply(seq_len(ncol(R)), function(i)
+    sum(R[, i] >  0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
+  
+  HeatmapAnnotation(
+    log2CPM   = apply(log2(abund_mtx_tumour[sp_cols, , drop = FALSE] + 1), 1, mean),
+    Positive  = anno_barplot(pos_v,
+                             gp = gpar(border = NA, fill = "#701145FF", lty = "blank")),
+    Negative  = anno_barplot(neg_v,
+                             gp = gpar(border = NA, fill = "#008280FF", lty = "blank")),
+    col = list(
+      log2CPM   = colorRamp2(c(12, 17), c("white", "darkgreen"))
+    ),
+    show_legend = show_legend,
+    show_annotation_name = show_legend
+  )
+}
+top_anno_idwas <- build_top_anno(cor_r_idwas, cor_p_idwas,
+                                 colnames(cor_r_idwas), show_legend = TRUE)
+
+# Significant star
+make_cell_fun <- function(P) {
+  function(j, i, x, y, w, h, fill) {
+    p <- P[i, j]
+    if (is.na(p)) return(invisible(NULL))
+    sym <- if (p < 0.001) "***" else if (p < 0.01) "**" else if (p < 0.05) "*" else NULL
+    if (!is.null(sym)) {
+      gb   <- textGrob(sym)
+      gb_h <- convertHeight(grobHeight(gb), "mm")
+      grid.text(sym, x, y - gb_h * 0.2, gp = gpar(col = 1, cex = .5))
+    }
+  }
+}
+
+# Color scale & column-name bottom annotation
+rng <- range(cor_r_idwas, na.rm = TRUE)
+col_fun <- colorRamp2(seq(-max(abs(rng)), max(abs(rng)), length.out = 11),
+                      rev(brewer.pal(11, "RdBu")))
+
+cn_idwas <- colnames(cor_r_idwas)
+
+bottom_anno_idwas <- HeatmapAnnotation(
+  text = anno_text(cn_idwas, rot = 60, location = unit(1, "npc"), just = "right"),
+  annotation_height = max_text_width(cn_idwas)
+)
+
+ht_idwas <- Heatmap(
+  cor_r_idwas,
+  name              = "Rs",
+  col               = col_fun,
+  column_title      = "iDWAS",
+  row_names_gp      = gpar(fontsize = 9),
+  show_row_names    = TRUE,
+  show_column_names = FALSE,
+  cluster_rows      = TRUE,
+  cluster_columns   = TRUE,
+  top_annotation    = top_anno_idwas,
+  bottom_annotation = bottom_anno_idwas,
+  right_annotation  = right_anno,
+  cell_fun          = make_cell_fun(cor_p_idwas),
+  show_heatmap_legend = TRUE
+)
+
+pdf(file.path(DIR_FIG, "Heatmap_idwas_correlation.pdf"), width = 6, height = 7)
+draw(ht_idwas,
+     merge_legends          = TRUE,
+     heatmap_legend_side    = "right",
+     annotation_legend_side = "right")
+dev.off()
+
+####
+# EF
+cor_ef_idwas <- corr.test(t(as.matrix(idwas_mtx)), 
+                          t(as.matrix(abund_mtx["Enterococcus_faecalis", ])),
+                          method = "spearman")
+cor_ef_idwas_r <- cor_ef_idwas$r
+cor_ef_idwas_p <- cor_ef_idwas$p.adj
+rownames(cor_ef_idwas_r) <- gsub("\\.", "-", rownames(cor_ef_idwas_r))
+
+cor_ef_idwas_res <- data.frame(
+  drug = rownames(cor_ef_idwas_r),
+  rs = cor_ef_idwas_r[ , 1],
+  padj = cor_ef_idwas_p[ , 1]
+) %>%
+  mutate(sig = case_when(rs > 0.3 & padj < 0.05 ~ "Pos",
+                         rs < -0.3 & padj < 0.05 ~ "Neg",
+                         TRUE ~ "NS"))
+
+cor_ef_idwas_highlight <- cor_ef_idwas_res %>%
+  arrange(rs)
+cor_ef_idwas_highlight <- cor_ef_idwas_highlight[c(1:3, 
+                                                   (nrow(cor_ef_idwas_highlight) - 2):
+                                                     nrow(cor_ef_idwas_highlight)), ]
+
+pdf(file.path(DIR_FIG, "A_volc_EF_cor_idwas.pdf"), width = 4, height = 3.5)
+ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) + 
+  ggtitle("EF correlated drugs (IDWAS)") + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("#126CAA", "grey", "#9A342C")) +
+  geom_point(cor_ef_idwas_highlight, shape = 21, color = "#FFB900FF",
+             mapping = aes(x = rs, y = -log10(padj)),
+             size = 2.7) + 
+  xlim(-0.5, 0.5) +
+  ggrepel::geom_label_repel(data = cor_ef_idwas_highlight,
+                            aes(x = rs, y = -log10(padj), 
+                                label = drug),
+                            color="grey27",
+                            alpha = .8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = 0.3, linetype = "dashed") +
+  geom_vline(xintercept = -0.3, linetype = "dashed") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
 dev.off()
