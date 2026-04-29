@@ -415,7 +415,7 @@ ggplot(sp_umap_df, aes(UMAP1, UMAP2)) +
   ) +
   theme_minimal(base_size = 11) +
   theme(
-    legend.position  = "none",
+    legend.position  = "bottom",
     axis.line        = element_blank(),
     axis.ticks       = element_blank(),
     axis.text        = element_blank(),
@@ -522,6 +522,7 @@ hexp_tpm <- hexp_tpm[rownames(hexp_tpm) %in% coding_gene_list, ]
 hexp_tpm <- hexp_tpm[rowMeans(hexp_tpm) > 1, ]
 dim(hexp_tpm)
 
+hexp_tpm <- hexp_tpm[, grep("C", colnames(hexp_tpm))]
 hexp_norm <- t(apply(hexp_tpm, 1, function(gene_values) {
   (gene_values - mean(gene_values, na.rm = TRUE)) / sd(gene_values, na.rm = TRUE)
 }))
@@ -628,9 +629,7 @@ dev.off()
 
 # Target species
 # in idwas
-all(colnames(idwas_mtx) == colnames(abund_mtx))
-cor_sp_idwas <- psych::corr.test(t(as.matrix(idwas_mtx)), t(as.matrix(abund_mtx)),
-                                 method = "spearman")
+cor_sp_idwas <- readRDS(file.path(DIR_RDS, "Correlation_species_idwas.rds"))
 cor_r_idwas <- cor_sp_idwas$r
 cor_p_idwas <- cor_sp_idwas$p.adj
 
@@ -643,7 +642,7 @@ drug_universe <- rownames(cor_r_idwas)
 pathway_all <- gdsc_target[gdsc_target$Name %in% drug_universe,
                            c("Name", "Target.pathway")]
 pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
-potent_syn  <- setdiff(drug_universe, pathway_all$Name)
+potent_syn  <- base::setdiff(drug_universe, pathway_all$Name)
 
 rename_map <- setNames(potent_syn, potent_syn)
 notfound   <- c()
@@ -660,7 +659,7 @@ for (i in seq_along(potent_syn)) {
   }
 }
 
-# Apply rename
+# apply rename
 apply_rename <- function(m, map) {
   rn <- rownames(m)
   rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
@@ -713,16 +712,15 @@ build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
     sum(R[, i] < -0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
   pos_v <- vapply(seq_len(ncol(R)), function(i)
     sum(R[, i] >  0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
+  mean_abund <- rowMeans(abund_mtx_tumour[sp_cols, , drop = FALSE], na.rm = TRUE)
   
   HeatmapAnnotation(
-    log2CPM   = apply(log2(abund_mtx_tumour[sp_cols, , drop = FALSE] + 1), 1, mean),
+    MeanAbund = mean_abund,
     Positive  = anno_barplot(pos_v,
                              gp = gpar(border = NA, fill = "#701145FF", lty = "blank")),
     Negative  = anno_barplot(neg_v,
                              gp = gpar(border = NA, fill = "#008280FF", lty = "blank")),
-    col = list(
-      log2CPM   = colorRamp2(c(12, 17), c("white", "darkgreen"))
-    ),
+    col = list(MeanAbund = colorRamp2(c(0, 4), c("white", "darkgreen"))),
     show_legend = show_legend,
     show_annotation_name = show_legend
   )
@@ -758,26 +756,226 @@ bottom_anno_idwas <- HeatmapAnnotation(
 
 ht_idwas <- Heatmap(
   cor_r_idwas,
+  name                = "Rs",
+  col                 = col_fun,
+  column_title        = "iDWAS",
+  row_names_gp        = gpar(fontsize = 9),
+  show_row_names      = TRUE,
+  show_column_names   = FALSE,
+  cluster_rows        = TRUE,
+  cluster_columns     = TRUE,
+  top_annotation      = top_anno_idwas,
+  bottom_annotation   = bottom_anno_idwas,
+  right_annotation    = right_anno,
+  cell_fun            = make_cell_fun(cor_p_idwas),
+  show_heatmap_legend = TRUE
+)
+
+pdf(file.path(DIR_FIG, "Heatmap_idwas.pdf"), width = 6, height = 8)
+draw(ht_idwas,
+     merge_legends          = TRUE,
+     heatmap_legend_side    = "right",
+     annotation_legend_side = "right")
+dev.off()
+
+# in CARE
+cor_sp_care <- readRDS(file.path(DIR_RDS, "Correlation_species_care.rds"))
+cor_r_care <- cor_sp_care$r
+cor_p_care <- cor_sp_care$p.adj
+
+# Drug name normalisation
+rownames(cor_r_idwas) <- gsub("\\.", "-", rownames(cor_r_idwas))
+rownames(cor_p_idwas) <- gsub("\\.", "-", rownames(cor_p_idwas))
+rownames(cor_r_care)  <- gsub("\\.", "-", rownames(cor_r_care))
+rownames(cor_p_care)  <- gsub("\\.", "-", rownames(cor_p_care))
+
+drug_universe <- union(rownames(cor_r_idwas), rownames(cor_r_care))
+
+pathway_all <- gdsc_target[gdsc_target$Name %in% drug_universe,
+                           c("Name", "Target.pathway")]
+pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+potent_syn  <- setdiff(drug_universe, pathway_all$Name)
+
+rename_map <- setNames(potent_syn, potent_syn)
+notfound   <- c()
+for (i in seq_along(potent_syn)) {
+  hit <- grep(potent_syn[i], gdsc_target$Synonyms)
+  tmp_name <- gdsc_target$Name[hit][1]
+  tmp_path <- gdsc_target$Target.pathway[hit][1]
+  if (is.na(tmp_name)) {
+    notfound <- c(notfound, potent_syn[i])
+    pathway_all <- rbind(pathway_all, c(potent_syn[i], "Unannotated"))
+  } else {
+    rename_map[potent_syn[i]] <- tmp_name
+    pathway_all <- rbind(pathway_all, c(tmp_name, tmp_path))
+  }
+}
+
+# apply rename to both matrices
+apply_rename <- function(m, map) {
+  rn <- rownames(m)
+  rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
+  rownames(m) <- rn
+  m
+}
+cor_r_idwas <- apply_rename(cor_r_idwas, rename_map)
+cor_p_idwas <- apply_rename(cor_p_idwas, rename_map)
+cor_r_care  <- apply_rename(cor_r_care,  rename_map)
+cor_p_care  <- apply_rename(cor_p_care,  rename_map)
+
+pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+rownames(pathway_all) <- pathway_all$Name
+
+# Filter: significant in either panel
+sig_in <- function(R, P) {
+  apply(R, 1, function(x) any(abs(x) > 0.2, na.rm = TRUE)) &
+    apply(P, 1, function(x) any(x < 0.05, na.rm = TRUE))
+}
+common_drugs <- intersect(rownames(cor_r_idwas), rownames(cor_r_care))
+keep <- common_drugs[
+  sig_in(cor_r_idwas[common_drugs, , drop = FALSE],
+         cor_p_idwas[common_drugs, , drop = FALSE]) |
+    sig_in(cor_r_care[common_drugs, , drop = FALSE],
+           cor_p_care[common_drugs, , drop = FALSE])
+]
+
+# Concordance filter: overall effect sign must agree across panels
+common_sp <- intersect(colnames(cor_r_idwas), colnames(cor_r_care))
+
+concordant <- vapply(keep, function(d) {
+  r1 <- cor_r_idwas[d, common_sp]
+  r2 <- cor_r_care[d, common_sp]
+  ok <- is.finite(r1) & is.finite(r2)
+  if (sum(ok) < 3) return(FALSE)
+  
+  r1 <- r1[ok]; r2 <- r2[ok]
+  
+  # 1) overall direction: mean signs must match (and be non-trivial)
+  m1 <- mean(r1); m2 <- mean(r2)
+  if (sign(m1) != sign(m2) || sign(m1) == 0) return(FALSE)
+  
+  # 2) sign agreement at the species level: majority of signs must match
+  sign_agree <- mean(sign(r1) == sign(r2))
+  if (sign_agree < 0.5) return(FALSE)
+  
+  # 3) pattern correlation
+  rho <- suppressWarnings(cor(r1, r2, method = "pearson"))
+  isTRUE(rho > 0)
+}, logical(1))
+
+keep <- keep[concordant]
+
+keep <- intersect(keep, rownames(cor_r_idwas))
+keep <- intersect(keep, rownames(cor_r_care))
+
+cor_r_idwas <- cor_r_idwas[keep, , drop = FALSE]
+cor_p_idwas <- cor_p_idwas[keep, , drop = FALSE]
+cor_r_care  <- cor_r_care[keep,  , drop = FALSE]
+cor_p_care  <- cor_p_care[keep,  , drop = FALSE]
+
+# Right pathway annotation
+rownames(pathway_all) <- pathway_all$Name
+pathway_vec <- pathway_all[keep, "Target.pathway"]
+
+col_pathway <- c(paletteer_d("ggsci::default_jco"),
+                 paletteer_d("pals::kelly"))[seq_along(unique(pathway_vec))]
+names(col_pathway) <- unique(pathway_vec)
+col_pathway[is.na(names(col_pathway)) | names(col_pathway) == "Unannotated"] <- "grey80"
+
+right_anno <- rowAnnotation(
+  Pathway = pathway_vec,
+  col = list(Pathway = col_pathway),
+  show_annotation_name = TRUE
+)
+
+# Panel
+build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
+  mean_abund <- rowMeans(abund_mtx_tumour[sp_cols, , drop = FALSE], na.rm = TRUE)
+  rng <- range(mean_abund, na.rm = TRUE)
+  
+  HeatmapAnnotation(
+    log2CPM = mean_abund,
+    col = list(log2CPM = colorRamp2(rng, c("white", "darkgreen"))),
+    show_legend = show_legend,
+    show_annotation_name = show_legend
+  )
+}
+top_anno_idwas <- build_top_anno(cor_r_idwas, cor_p_idwas,
+                                 colnames(cor_r_idwas), show_legend = TRUE)
+top_anno_care  <- build_top_anno(cor_r_care,  cor_p_care,
+                                 colnames(cor_r_care),  show_legend = FALSE)
+
+# Significant star
+make_cell_fun <- function(P) {
+  function(j, i, x, y, w, h, fill) {
+    p <- P[i, j]
+    if (is.na(p)) return(invisible(NULL))
+    sym <- if (p < 0.001) "***" else if (p < 0.01) "**" else if (p < 0.05) "*" else NULL
+    if (!is.null(sym)) {
+      gb   <- textGrob(sym)
+      gb_h <- convertHeight(grobHeight(gb), "mm")
+      grid.text(sym, x, y - gb_h * 0.2, gp = gpar(col = 1, cex = .5))
+    }
+  }
+}
+
+# Share color scale & column-name bottom annotation
+rng <- range(c(cor_r_idwas, cor_r_care), na.rm = TRUE)
+col_fun <- colorRamp2(seq(-max(abs(rng)), max(abs(rng)), length.out = 11),
+                      rev(brewer.pal(11, "RdBu")))
+
+cn_idwas <- colnames(cor_r_idwas)
+cn_care  <- colnames(cor_r_care)
+
+bottom_anno_idwas <- HeatmapAnnotation(
+  text = anno_text(cn_idwas, location = unit(1, "npc"), just = "right"),
+  annotation_height = max_text_width(cn_idwas)
+)
+bottom_anno_care <- HeatmapAnnotation(
+  text = anno_text(cn_care, location = unit(1, "npc"), just = "right"),
+  annotation_height = max_text_width(cn_care)
+)
+
+ht_idwas <- Heatmap(
+  cor_r_idwas,
   name              = "Rs",
   col               = col_fun,
   column_title      = "iDWAS",
   row_names_gp      = gpar(fontsize = 9),
-  show_row_names    = TRUE,
   show_column_names = FALSE,
   cluster_rows      = TRUE,
   cluster_columns   = TRUE,
   top_annotation    = top_anno_idwas,
   bottom_annotation = bottom_anno_idwas,
-  right_annotation  = right_anno,
   cell_fun          = make_cell_fun(cor_p_idwas),
   show_heatmap_legend = TRUE
 )
 
-pdf(file.path(DIR_FIG, "Heatmap_idwas_correlation.pdf"), width = 6, height = 7)
-draw(ht_idwas,
+ht_care <- Heatmap(
+  cor_r_care,
+  name                = "Rs",
+  col                 = col_fun,
+  column_title        = "CARE",
+  row_names_gp        = gpar(fontsize = 9),
+  show_row_names      = TRUE,
+  show_column_names   = FALSE,
+  cluster_rows        = FALSE,
+  cluster_columns     = TRUE,
+  top_annotation      = top_anno_care,
+  bottom_annotation   = bottom_anno_care,
+  right_annotation    = right_anno,
+  cell_fun            = make_cell_fun(cor_p_care),
+  show_heatmap_legend = FALSE
+)
+
+ht_list <- ht_idwas + ht_care
+
+pdf(file.path(DIR_FIG, "Heatmap_drug_both.pdf"), width = 9, height = 7)
+draw(ht_list,
      merge_legends          = TRUE,
      heatmap_legend_side    = "right",
-     annotation_legend_side = "right")
+     annotation_legend_side = "right",
+     ht_gap = unit(4, "mm"))
 dev.off()
 
 ####
@@ -824,4 +1022,76 @@ ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1))
+dev.off()
+
+# Correlation between abundance and care-predicted responses
+cor_ef_care <- corr.test(t(as.matrix(care_pred_matrix)), 
+                         t(as.matrix(abund_mtx["Enterococcus_faecalis", colnames(care_pred_matrix)])),
+                         method = "spearman")
+cor_ef_care_r <- cor_ef_care$r
+cor_ef_care_p <- cor_ef_care$p.adj
+
+cor_ef_care_res <- data.frame(
+  drug = rownames(cor_ef_care_r),
+  rs = cor_ef_care_r[ , 1],
+  padj = cor_ef_care_p[ , 1]
+) %>%
+  mutate(sig = case_when(rs > 0.3 & padj < 0.05 ~ "Pos",
+                         rs < -0.3 & padj < 0.05 ~ "Neg",
+                         TRUE ~ "NS"))
+
+cor_ef_care_highlight <- cor_ef_care_res %>%
+  arrange(rs)
+cor_ef_care_highlight <- cor_ef_care_highlight[c(1:4, 
+                                                 (nrow(cor_ef_care_highlight) - 3):
+                                                   nrow(cor_ef_care_highlight)), ]
+
+pdf(file.path(DIR_FIG, "A_volc_EF_cor_care.pdf"), width = 4, height = 3.5)
+ggplot(cor_ef_care_res, aes(x = rs, y = -log10(padj), colour = sig)) + 
+  ggtitle("EF correlated drugs (CARE)") + 
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("#126CAA", "grey", "#9A342C")) +
+  geom_point(cor_ef_care_highlight, shape = 21, color = "#FFB900FF",
+             mapping = aes(x = rs, y = -log10(padj)),
+             size = 2.7) + 
+  ggrepel::geom_label_repel(data = cor_ef_care_highlight,
+                            aes(x = rs, y = -log10(padj), 
+                                label = drug),
+                            color="grey27",
+                            alpha = .8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = 0.3, linetype = "dashed") +
+  geom_vline(xintercept = -0.3, linetype = "dashed") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+dev.off()
+
+####################
+# Calculate overlaps
+process_drug <- function(res, sig_type) {
+  drugs <- res$drug[res$sig == sig_type]
+  drugs[!grepl("\\-|[1-9]", drugs)]
+}
+
+sensitive_idwas <- process_drug(cor_ef_idwas_res, "Neg")
+sensitive_care <- process_drug(cor_ef_care_res, "Neg")
+resistant_idwas <- process_drug(cor_ef_idwas_res, "Pos")
+resistant_care <- process_drug(cor_ef_care_res, "Pos")
+
+# Venn
+venn_both <- list(
+  "IDWAS Sensitive" = sensitive_idwas,
+  "CARE Sensitive" = sensitive_care,
+  "CARE Resistant" = resistant_care,
+  "IDWAS Resistant" = resistant_idwas
+)
+pdf(file.path(DIR_FIG, "B_venn.pdf"), width = 6, height = 6)
+ggvenn(venn_both,
+       text_size = 4,
+       text_color = "white",
+       show_percentage = T,
+       fill_color = paletteer_d("ggsci::default_jama")[c(3, 5, 2, 4)],
+       fill_alpha = 0.7,
+       stroke_color = "white")
 dev.off()
