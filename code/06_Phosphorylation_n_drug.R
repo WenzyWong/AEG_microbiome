@@ -27,7 +27,7 @@ set.seed(42)
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
 DIR_TAB <- "/data/yzwang/project/AEG_seiri/table_infos/"
-DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4_phospho/"
+DIR_FIG <- "/data/yzwang/project/AEG_seiri/results/F4_phospho_n_drugs/"
 
 ##########################
 # Preprocess original data
@@ -777,6 +777,74 @@ draw(ht_idwas,
      heatmap_legend_side    = "right",
      annotation_legend_side = "right")
 dev.off()
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Per-drug significance flags across all species
+sig_pos_drug <- apply(cor_r_idwas > 0.2 & cor_p_idwas < 0.05, 1,
+                      function(x) any(x, na.rm = TRUE))
+sig_neg_drug <- apply(cor_r_idwas < -0.2 & cor_p_idwas < 0.05, 1,
+                      function(x) any(x, na.rm = TRUE))
+
+drug_sig_df <- data.frame(
+  Drug    = rownames(cor_r_idwas),
+  Pathway = pathway_vec,
+  Pos     = sig_pos_drug,
+  Neg     = sig_neg_drug,
+  stringsAsFactors = FALSE
+)
+
+# Aggregate per pathway
+pathway_count <- drug_sig_df %>%
+  group_by(Pathway) %>%
+  summarise(
+    Positive = sum(Pos),
+    Negative = sum(Neg),
+    Total    = Positive + Negative,
+    .groups  = "drop"
+  ) %>%
+  arrange(Total)
+
+# Long format for stacked bar
+pathway_long <- pathway_count %>%
+  dplyr::select(Pathway, Positive, Negative, Total) %>%
+  pivot_longer(cols = c("Negative", "Positive"),
+               names_to = "Direction", values_to = "N") %>%
+  mutate(
+    Pathway   = factor(Pathway, levels = pathway_count$Pathway),
+    Direction = factor(Direction, levels = c("Negative", "Positive"))
+  )
+
+cor_cols <- c(Negative = "#2E5C8A", Positive = "#E8A33D")
+
+p_path <- ggplot(pathway_long, aes(x = N, y = Pathway, fill = Direction)) +
+  geom_col(width = 0.7) +
+  geom_text(
+    data = pathway_count,
+    aes(x = Total, y = Pathway, label = Total),
+    inherit.aes = FALSE,
+    hjust = -0.3, size = 3
+  ) +
+  scale_fill_manual(values = cor_cols, name = "Correlation") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "Number of drugs", y = NULL,
+       title = "Drug count per target pathway") +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text.y = element_text(color = "black"),
+    axis.text.x = element_text(color = "black"),
+    plot.title  = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+ggsave(
+  filename = file.path(DIR_FIG, "Barplot_pathway_drug_count.pdf"),
+  plot     = p_path,
+  width    = 4,
+  height   = 5
+)
 
 # in CARE
 cor_sp_care <- readRDS(file.path(DIR_RDS, "Correlation_species_care.rds"))
