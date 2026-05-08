@@ -5,9 +5,6 @@
 # Step 04. Analyse AEG-specific microbiome
 #
 #######################################################
-#remotes::install_github("taowenmicro/EasyStat")
-#remotes::install_github("taowenmicro/ggClusterNet")
-#remotes::install_github("zdk123/SpiecEasi")
 set.seed(42)
 library(vegan)
 library(dplyr)
@@ -55,198 +52,174 @@ clinical <- readxl::read_excel(file.path(DIR_TAB, "AEG_clinical.xlsx"))
 ##############################
 # Circle plot of genus-species
 # Allocate positions for species
-gAbund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
-gAbund <- gAbund[1:20]
-indexSp <- c() # The species index in the cpm matrix, assigned to each genus
-for (g in names(gAbund)) {
-  pairSp <- grep(paste("*", g, "*", sep = ""), rownames(mtx_cpm))
-  indexSp <- c(indexSp, pairSp)
-}
+g_abund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
+g_abund <- g_abund[1:20]
+# Collect species rows that belong to any top-abundant genus
+index_sp <- unlist(lapply(names(g_abund),
+                         function(g) grep(g, rownames(mtx_cpm), fixed = TRUE)))
 
-abundSpTop <- apply(mtx_cpm[indexSp, ] / 1e+4, MARGIN = 1, FUN = mean)
-abundSpTop <- data.frame(
-  Species = gsub("[[:punct:]]", "_", names(abundSpTop)), # Adjusting the species names to successfully establish formulas
-  Abundance = apply(mtx_cpm[indexSp, ] / 1e+4, MARGIN = 1, FUN = mean)
-) # Species within top30 genera, no matter how abundant they really are
-# Notice: the rownames of abundSpTop is different from abundSpTop$Species.
-# Using species name in the latter steps, you must pay attention to the choice.
+# Mean abundance (%) of each top-genus species; computed once and reused below
+abund_top <- apply(mtx_cpm[index_sp, ] / 1e+4, MARGIN = 1, FUN = mean)
+abund_sp_top <- data.frame(
+  # Sanitise species names so they can be used as R formula terms
+  Species   = gsub("[[:punct:]]", "_", names(abund_top)),
+  Abundance = abund_top
+) # Species within top 20 genera, regardless of their absolute abundance
+# Notice: rownames(abund_sp_top) differs from abund_sp_top$Species.
+# Pay attention to which one is used in downstream steps.
 
-abundSpTop <- abundSpTop[abundSpTop$Abundance > 0.01, ]
+abund_sp_top <- abund_sp_top[abund_sp_top$Abundance > 0.01, ]
 
-# drawHR1 contains the clinical information of the samples
-drawHR1 <- data.frame(
+# draw_hr1 contains the clinical information of the samples
+draw_hr1 <- data.frame(
   sample = paste0("C", clinical$No.),
   time = clinical$`Survival time（Month）`,
   state = clinical$`Status（1=Dead, 0=Alive）`
 ) %>%
   filter(sample %in% colnames(mtx_cpm))
 
-# drawHR2 contains the log2CPM values of species
-drawHR2 <- as.data.frame(t(log2(mtx_cpm[rownames(abundSpTop), drawHR1$sample] + 1)))
-colnames(drawHR2) <- abundSpTop$Species
-drawHR2$sample <- rownames(drawHR2) # Used for merge only
+# draw_hr2 contains the log2CPM values of species
+draw_hr2 <- as.data.frame(t(log2(mtx_cpm[rownames(abund_sp_top), draw_hr1$sample] + 1)))
+colnames(draw_hr2) <- abund_sp_top$Species
+draw_hr2$sample <- rownames(draw_hr2) # Used for merge only
 
-drawHR <- merge(drawHR1, drawHR2, by = "sample")
+draw_hr <- merge(draw_hr1, draw_hr2, by = "sample")
 
 # Calculating HR
 source(file.path(DIR_TOOL, "hr_calc.R"))
-hrRes <- hr_calc(abundSpTop$Species, drawHR, 1.1, 0.9, 0.05)
+hr_res <- hr_calc(abund_sp_top$Species, draw_hr, 1.1, 0.9, 0.05)
 # The warnings exist because all the tumour CPM values of these species equals to 0
 
-abundSpTop$Surv.HR <- hrRes$HR
-abundSpTop$Surv.P <- hrRes$Pvalue
-abundSpTop$Surv.Risk <- hrRes$Risk
-abundSpTop$Surv.HR[abundSpTop$Surv.HR > 3] <- 3
+abund_sp_top$Surv.HR <- hr_res$HR
+abund_sp_top$Surv.P <- hr_res$Pvalue
+abund_sp_top$Surv.Risk <- hr_res$Risk
+abund_sp_top$Surv.HR[abund_sp_top$Surv.HR > 3] <- 3
 # Removing the species with 0 count values in tumour samples, causing HR equals to NA
-abundSpTop <- na.omit(abundSpTop)
+abund_sp_top <- na.omit(abund_sp_top)
 
-lenEachG <- c() # The number of identified species within each abundant genus
-for (g in names(gAbund)) {
-  # This temporary variant "pairSp" is different from the "pairSp" in the first loop
-  pairSp <- grep(paste("*", g, "*", sep = ""), abundSpTop$Species) 
-  lenEachG <- c(lenEachG, length(pairSp))
-}
-names(lenEachG) <- names(gAbund)
+# Number of identified species within each abundant genus
+len_each_g <- vapply(names(g_abund),
+                   function(g) length(grep(g, abund_sp_top$Species, fixed = TRUE)),
+                   integer(1))
 
-# Allocate positions for species-pairing genera
-tmpGenera <- c() # Species-pairing genera
-tmpX <- c() # Allocate x-coordinates by the number of indentified species within each genus
-for (i in c(1:length(gAbund))) {
-  tmpGenera <- c(tmpGenera, rep(names(gAbund)[i], lenEachG[i]))
-  tmpX <- c(tmpX, seq(0, 1, length.out = lenEachG[i]))
-}
-abundSpTop$Genus <- tmpGenera
-abundSpTop$X <- tmpX
+# Allocate genus tag and circular x-coordinate for each species
+abund_sp_top$Genus <- rep(names(g_abund), times = len_each_g)
+abund_sp_top$X     <- unlist(lapply(len_each_g,
+                                  function(n) seq(0, 1, length.out = n)))
 
 # Calculating differential
 source(file.path(DIR_TOOL, "wilcox_diff.R"))
-diffSp <- wilcox_diff(mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abundSpTop$Species, ],
+diff_sp <- wilcox_diff(mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
+                                abund_sp_top$Species, ],
                       mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abundSpTop$Species, grep("C", colnames(mtx_cpm))],
+                                abund_sp_top$Species, grep("C", colnames(mtx_cpm))],
                       mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abundSpTop$Species, grep("N", colnames(mtx_cpm))],
+                                abund_sp_top$Species, grep("N", colnames(mtx_cpm))],
                       T, 0.05, log2(1.5))
-colnames(diffSp)[1] <- "Species"
-diffSp <- diffSp[order(diffSp$Species, decreasing = T), ]
+colnames(diff_sp)[1] <- "Species"
+diff_sp <- diff_sp[order(diff_sp$Species, decreasing = T), ]
 
 # Pairing differential trend toward species pending circlize plot
-abundSpTop$Diff.Trend <- diffSp$Change
-abundSpTop$Diff.Padj <- diffSp$P.adj
-abundSpTop$Diff.Log2FC <- diffSp$log2FC
+abund_sp_top$Diff.Trend <- diff_sp$Change
+abund_sp_top$Diff.Padj <- diff_sp$P.adj
+abund_sp_top$Diff.Log2FC <- diff_sp$log2FC
 
-#saveRDS(abundSpTop, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
-#abundSpTop <- readRDS(file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
+#saveRDS(abund_sp_top, file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
+#abund_sp_top <- readRDS(file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
 
-colGenera <- paste0(substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
+col_genera <- paste0(substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
                                                                     23:27, 2, 4, 5, 7, 9)], 
                            1, 7), "80") # Colours for genera. "80" reprensents alpha
-colSp <- substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
+col_sp <- substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
                                                          23:27, 2, 4, 5, 7, 9)], 
                 1, 7)
 
-# Assigning the scaled colours for survival HR risks
-# Calculating the assignment portion within colour gradiant
-lenHRl <- length(rownames(abundSpTop)[abundSpTop$Surv.HR > 1.1])
-lenHRs <- length(rownames(abundSpTop)[abundSpTop$Surv.HR < 0.9])
-colourHRl <- colorRampPalette(c("#CC6329", "#CDCDCD"))(lenHRl)
-colourHRs <- colorRampPalette(c("#409161", "#CDCDCD"))(lenHRs)
-colourHR <- c()
-cntl <- 0
-cnts <- 0
-orderHR <- abundSpTop[order(abs(abundSpTop$Surv.HR), decreasing = T), ]
-for (i in 1:nrow(orderHR)) {
-  if (orderHR$Surv.HR[i] > 1.1) {
-    cntl <- cntl + 1
-    colourHR <- c(colourHR, colourHRl[cntl])
-  } else if (orderHR$Surv.HR[i] < 0.9) {
-    cnts <- cnts + 1
-    colourHR <- c(colourHR, colourHRs[cnts])
-  } else {
-    colourHR <- c(colourHR, "#EDEDED")
+# Map a numeric metric onto a divergent colour gradient.
+# Values above `hi` use the upper palette, below `lo` the lower one,
+# and the in-between values share a neutral grey. Stronger absolute
+# values (further from the neutral band) receive more saturated colours.
+gradient_colours <- function(values, hi, lo, col_hi, col_lo, col_mid = "#EDEDED") {
+  n_hi <- sum(values > hi)
+  n_lo <- sum(values < lo)
+  pal_hi <- colorRampPalette(c(col_hi, "#CDCDCD"))(n_hi)
+  pal_lo <- colorRampPalette(c(col_lo, "#CDCDCD"))(n_lo)
+  ord <- order(abs(values), decreasing = TRUE)
+  out <- character(length(values))
+  i_hi <- 0L; i_lo <- 0L
+  for (k in seq_along(ord)) {
+    v <- values[ord[k]]
+    if (v > hi)       { i_hi <- i_hi + 1L; out[k] <- pal_hi[i_hi] }
+    else if (v < lo)  { i_lo <- i_lo + 1L; out[k] <- pal_lo[i_lo] }
+    else              { out[k] <- col_mid }
   }
+  names(out) <- names(values)[ord]
+  out[names(values)]
 }
-names(colourHR) <- rownames(orderHR)
-colourHR <- colourHR[rownames(abundSpTop)]
 
-# Assigning the scaled colours for differential log2 fold changes
-# Calculating the assignment portion within colour gradiant
-lenLog2FCl <- length(rownames(abundSpTop)[abundSpTop$Diff.Log2FC > log2(1.5)])
-lenLog2FCs <- length(rownames(abundSpTop)[abundSpTop$Diff.Log2FC < -log2(1.5)])
-colourLog2FCl <- colorRampPalette(c("#9A342C", "#CDCDCD"))(lenLog2FCl)
-colourLog2FCs <- colorRampPalette(c("#2C6199", "#CDCDCD"))(lenLog2FCs)
+# Survival hazard ratio colours; keyed by rownames(abund_sp_top)
+colour_hr <- gradient_colours(
+  setNames(abund_sp_top$Surv.HR, rownames(abund_sp_top)),
+  hi = 1.1, lo = 0.9, col_hi = "#CC6329", col_lo = "#409161"
+)
 
-colourLog2FC <- c()
-cntl <- 0
-cnts <- 0
-orderDiff <- abundSpTop[order(abs(abundSpTop$Diff.Log2FC), decreasing = T), ]
-for (i in 1:nrow(orderDiff)) {
-  if (orderDiff$Diff.Log2FC[i] > log2(1.5)) {
-    cntl <- cntl + 1
-    colourLog2FC <- c(colourLog2FC, colourLog2FCl[cntl])
-  } else if (orderDiff$Diff.Log2FC[i] < -log2(1.5)) {
-    cnts <- cnts + 1
-    colourLog2FC <- c(colourLog2FC, colourLog2FCs[cnts])
-  } else {
-    colourLog2FC <- c(colourLog2FC, "#EDEDED")
-  }
-}
-names(colourLog2FC) <- rownames(orderDiff)
-colourLog2FC <- colourLog2FC[abundSpTop$Species]
+# Differential log2 fold change colours; re-keyed by Species for the loop below
+colour_log2fc <- gradient_colours(
+  setNames(abund_sp_top$Diff.Log2FC, rownames(abund_sp_top)),
+  hi = log2(1.5), lo = -log2(1.5), col_hi = "#9A342C", col_lo = "#2C6199"
+)
+colour_log2fc <- colour_log2fc[abund_sp_top$Species]
 
 # Drawing the most abundant genera section
 # Allocating the canvas and sectors
 pdf(file.path(DIR_RES, "Circlised_genus_species_filtered.pdf"), width = 8, height = 8)
 par(mar = c(1, 1, 1, 1) * 11, cex = 0.6, xpd = NA)
-sectors <- factor(names(gAbund), levels = names(gAbund))
+sectors <- factor(names(g_abund), levels = names(g_abund))
 circos.par(points.overflow.warning = FALSE,
            cell.padding = c(0, 0, 0, 0))
-circos.initialize(factors = sectors, xlim = c(0, 1), sector.width = lenEachG)
+circos.initialize(factors = sectors, xlim = c(0, 1), sector.width = len_each_g)
 circos.trackPlotRegion(factors = sectors, ylim = c(0, 12), 
                        track.height = 0.5, bg.border = "grey",
-                       bg.col = colGenera)
+                       bg.col = col_genera)
 
 # Drawing the species through loops
-cnt <- 0
-for (i in 1:length(gAbund)) {
+for (i in seq_along(g_abund)) {
   # Get species indices for current genus and sort by abundance
-  sp_indices <- which(abundSpTop$Genus == sectors[i])
-  sp_order <- sp_indices[order(abundSpTop$Abundance[sp_indices], decreasing = TRUE)]
-  
+  sp_indices <- which(abund_sp_top$Genus == sectors[i])
+  sp_order <- sp_indices[order(abund_sp_top$Abundance[sp_indices], decreasing = TRUE)]
+
   # Calculate uniform width for each species within this genus
-  bar_width <- 1 / lenEachG[i] / 2  # Half width of each position
-  
-  for (j in 1:lenEachG[i]) {
-    cnt <- cnt + 1
+  bar_width <- 1 / len_each_g[i] / 2  # Half width of each position
+
+  for (j in seq_len(len_each_g[i])) {
     sp_idx <- sp_order[j]
     
     # Calculate the center position for this species
-    x_center <- (j - 0.5) / lenEachG[i]
+    x_center <- (j - 0.5) / len_each_g[i]
     
     # The length of each species-bar represents its relative abundance (log-transformed for better visualization)
     circos.rect(xleft = x_center - bar_width * 0.8,
                 ybottom = 0,
                 xright = x_center + bar_width * 0.8,
-                ytop = log10(abundSpTop$Abundance[sp_idx] + 1) * 
-                  (12 / log10(max(abundSpTop$Abundance) + 1)),
+                ytop = log10(abund_sp_top$Abundance[sp_idx] + 1) * 
+                  (12 / log10(max(abund_sp_top$Abundance) + 1)),
                 sector.index = sectors[i],
-                col = colSp[i],
+                col = col_sp[i],
                 border = NA)
     # The annotation circle representing survival risks of species
     circos.trackLines(sectors = sectors[i],
                       x = x_center,
                       y = -1,
-                      col = colourHR[sp_idx],
+                      col = colour_hr[sp_idx],
                       type = "h",
                       baseline = -2)
     # The annotation sub-circle representing survival significance (Surv.P)
     circos.trackLines(sectors = sectors[i],
                       x = x_center,
                       y = if_else(
-                        abundSpTop$Surv.Risk[sp_idx] != "NS", -2.4, -2.3
+                        abund_sp_top$Surv.Risk[sp_idx] != "NS", -2.4, -2.3
                       ),
                       col = if_else(
-                        abundSpTop$Surv.Risk[sp_idx] != "NS", "black", "white"
+                        abund_sp_top$Surv.Risk[sp_idx] != "NS", "black", "white"
                       ),
                       type = "h",
                       baseline = -2.3)
@@ -254,17 +227,17 @@ for (i in 1:length(gAbund)) {
     circos.trackLines(sectors = sectors[i],
                       x = x_center,
                       y = -4,
-                      col = colourLog2FC[sp_idx],
+                      col = colour_log2fc[sp_idx],
                       type = "h",
                       baseline = -3)
     # The annotation sub-circle representing differential significance (Diff.Padj)
     circos.trackLines(sectors = sectors[i],
                       x = x_center,
                       y = if_else(
-                        abundSpTop$Diff.Trend[sp_idx] != "NS", -4.4, -4.3
+                        abund_sp_top$Diff.Trend[sp_idx] != "NS", -4.4, -4.3
                       ),
                       col = if_else(
-                        abundSpTop$Diff.Trend[sp_idx] != "NS", "black", "white"
+                        abund_sp_top$Diff.Trend[sp_idx] != "NS", "black", "white"
                       ),
                       type = "h",
                       baseline = -4.3)
@@ -273,7 +246,7 @@ for (i in 1:length(gAbund)) {
   # The names of sectors (genera)
   circos.trackText(sectors = sectors[i],
                    x = 0.5, y = 7, cex = fontsize(14),
-                   labels = names(gAbund)[i],
+                   labels = names(g_abund)[i],
                    facing = "downward",
                    col = "black")
 }
@@ -288,7 +261,7 @@ dev.off()
 # Drawing the legend of differential log2FC using ggplot2
 # The only thing needed is the legend, so the main body of the plot can be ignored
 pdf(file.path(DIR_RES, "ScaleSurv_Legend.pdf"), width = 6, height = 5)
-ggplot(data = abundSpTop, aes(colour = Surv.HR, 
+ggplot(data = abund_sp_top, aes(colour = Surv.HR, 
                               x = Species, y = X)) +
   geom_point() + 
   scale_color_gradient2(aes(labs = c(min(Surv.HR), 1, max(Surv.HR))),
@@ -299,7 +272,7 @@ ggplot(data = abundSpTop, aes(colour = Surv.HR,
 dev.off()
 
 pdf(file.path(DIR_RES, "ScaleDiff_Legend.pdf"), width = 6, height = 5)
-ggplot(data = abundSpTop, aes(colour = Diff.Log2FC, 
+ggplot(data = abund_sp_top, aes(colour = Diff.Log2FC, 
                               x = Species, y = X)) +
   geom_point() + 
   scale_color_gradient2(aes(labs = c(min(Diff.Log2FC), 0, max(Diff.Log2FC))),
@@ -311,8 +284,8 @@ dev.off()
 
 #######################################
 # Alpha-diversity & ecological distance
-mtx_count_t <- mtx_count[ , grepl("C", colnames(mtx_count))]
-shan_tumour <- apply(mtx_count_t, 2, vegan::diversity)
+shan_tumour <- apply(mtx_count[, grepl("C", colnames(mtx_count))],
+                     MARGIN = 2, FUN = vegan::diversity)
 dist_tumour <- clinical$`Distance from the tumor center to the esophagogastric junction()`
 names(dist_tumour) <- paste0("C", clinical$No.)
 
@@ -368,7 +341,7 @@ dev.off()
 
 #############################
 # Alpha diversity & prognosis
-source(file.path(DIR_TOOL, "hr_calc.R"))
+# Note: hr_calc() was sourced earlier in this script
 df_surv <- data.frame(
   sample = paste0("C", clinical$No.),
   time = clinical$`Survival time（Month）`,
@@ -377,7 +350,6 @@ df_surv <- data.frame(
   filter(sample %in% overlap_samples) %>%
   arrange(., sample)
 shan_tumour <- shan_tumour[df_surv$sample]
-df_surv$sample == names(shan_tumour)
 
 df_surv <- df_surv %>%
   mutate(shannon = shan_tumour,
@@ -442,7 +414,6 @@ ggplot(hr_clinic, aes(x = HR, y = index,
 dev.off()
 
 hr_shan <- hr_calc("shannon", df_hr, 1.1, 0.9, 0.05)
-hr_shan
 
 pdf(file.path(DIR_RES, "Alpha_km.pdf"), width = 3.8, height = 4)
 surv_res$plot +
@@ -450,7 +421,7 @@ surv_res$plot +
     "text",
     x = 140, y = 0.95,
     vjust = 1, hjust = 1,
-    label = "HR = 0.439\np = 0.026",
+    label = sprintf("HR = %.3f\np = %.3f", hr_shan$HR, hr_shan$Pvalue),
     size = 5
   )
 dev.off()
@@ -495,16 +466,14 @@ for (col in rank_cols) {
                         node[[col]])
 }
 
-node_name <- node %>%
-  mutate(standard_name = paste0(gsub("g__", "", Rank6), "_", 
+# Build standard / short species names and keep only the candidate ones for labelling
+# Note: species_list is generated further below; this block must run after it.
+node_highlight <- node %>%
+  mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
                                 gsub("s__", "", Rank7)),
-         short_name = paste0(gsub("g__", "", Rank6) %>% 
-                               substr(., 1, 1) %>% 
-                               toupper(.), ".", 
-                             gsub("s__", "", Rank7)))
-
-node_highlight <- node_name %>%
-  filter(standard_name %in% species_list) # species_list has been generated by line 918
+         short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
+                             ".", gsub("s__", "", Rank7))) %>%
+  filter(standard_name %in% species_list)
 
 pdf(file.path(DIR_RES, "Net_all_candidates.pdf"), width = 12, height = 5)
 ggplot() + 
@@ -607,34 +576,13 @@ head(module_otu)
 table(module_otu$group)
 
 # Re-visualise the module relationships
-nodes <- module_otu %>%
-  select(ID, standard_name) %>%
-  distinct(ID, .keep_all = TRUE)
-
 # Expand nodes: each (ID, group) pair becomes a unique node
 species_modules_expanded <- module_otu %>%
   select(ID, group) %>%
   distinct() %>%
   mutate(node_id = paste0(ID, "__", group))
 
-# Node metadata
-nodes_expanded <- species_modules_expanded %>%
-  left_join(
-    module_otu %>% select(ID, standard_name) %>% distinct(),
-    by = "ID"
-  ) %>%
-  mutate(
-    node_type = case_when(
-      grepl("Normal", group) & ID %in% (species_modules_expanded %>%
-                                          group_by(ID) %>% 
-                                          filter(any(grepl("Tumour", group))) %>% 
-                                          pull(ID)) ~ "Conserved",
-      grepl("Normal", group) ~ "Normal-enriched",
-      grepl("Tumour", group) ~ "Tumour-enriched"
-    )
-  )
-
-# Classify shared IDs
+# IDs that appear in both Normal and Tumour modules (conserved)
 shared_ids <- species_modules_expanded %>%
   group_by(ID) %>%
   summarise(
@@ -645,11 +593,16 @@ shared_ids <- species_modules_expanded %>%
   filter(has_normal & has_tumour) %>%
   pull(ID)
 
-nodes_expanded <- nodes_expanded %>%
+# Node metadata with final node_type classification
+nodes_expanded <- species_modules_expanded %>%
+  left_join(
+    module_otu %>% select(ID, standard_name) %>% distinct(),
+    by = "ID"
+  ) %>%
   mutate(node_type = case_when(
-    ID %in% shared_ids ~ "Conserved",
-    grepl("Normal", group) ~ "Normal-enriched",
-    grepl("Tumour", group) ~ "Tumour-enriched"
+    ID %in% shared_ids      ~ "Conserved",
+    grepl("Normal", group)  ~ "Normal-enriched",
+    grepl("Tumour", group)  ~ "Tumour-enriched"
   ))
 
 # Edges: within-module, using expanded node_ids
@@ -702,18 +655,6 @@ ggraph(layout) +
         legend.title = element_blank())
 dev.off()
 
-module_simi <- module[[3]]
-
-module_simi$m1 <- module_simi$module1 %>% strsplit("model") %>%
-  sapply(`[`, 1)
-module_simi$m2 <- module_simi$module2 %>% strsplit("model") %>%
-  sapply(`[`, 1)
-module_simi$cross <- paste(module_simi$m1,module_simi$m2,sep = "_Vs_")
-
-module_simi <- module_simi %>% 
-  filter(module1 != "none")
-head(module_simi)
-
 # Aggregate standard names by group in module_otu
 module_species <- module_otu %>%
   group_by(group) %>%
@@ -726,8 +667,8 @@ saving_module <- data.frame(
   OTU = strsplit(module_species$otu[module_species$group == "Normalmodel_1"], "\\|")[[1]]
 ) %>%
   merge(., node, by.x = "OTU", by.y = "ID")
-abund_sp <- apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4
-saving_module$abundance <- abund_sp[saving_module$Species]
+saving_module$abundance <-
+  (apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4)[saving_module$Species]
 saving_module <- na.omit(saving_module)
 
 # Regression: Shannon index - candidate species
@@ -836,7 +777,6 @@ long_total_plot <- bind_rows(
     mutate(group = "candidate"),
   reshape2::melt(saving_info_ranked[!saving_info_ranked$is_candidate,
                                     c("Species", "rank_abundance")]) %>%
-    rename(variable = variable) %>%
     mutate(variable = "rank_total", group = "non-candidate")
 ) %>%
   mutate(
