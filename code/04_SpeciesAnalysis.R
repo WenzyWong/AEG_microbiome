@@ -35,6 +35,8 @@ library(RColorBrewer)
 # Regression
 library(compositions)
 library(glmnet)
+# Differential
+library(Maaslin2)
 
 setwd("/data/yzwang/project/AEG_seiri/")
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -1193,4 +1195,95 @@ final_plot_tn <- p_pcoa_enriched + (p_nest / p_dir) +
 
 pdf(file.path(DIR_RES, "Pcoa_nestedness_check.pdf"), width = 8, height = 4.5)
 print(final_plot_tn)
+dev.off()
+
+paired_samples <- c(paste0("C", paired_ids), paste0("N", paired_ids))
+
+count_paired <- mtx_count[, paired_samples]
+meta_paired <- data.frame(
+  sample = paired_samples,
+  patient = gsub("^[CN]", "", paired_samples),
+  group = factor(
+    ifelse(grepl("^C", paired_samples), "Tumour", "Normal"),
+    levels = c("Normal", "Tumour")
+  ),
+  row.names = paired_samples
+)
+
+# Run MaAsLin2
+maaslin_dir <- file.path(DIR_RES, "MaAsLin2_paired_TN")
+dir.create(maaslin_dir, showWarnings = FALSE, recursive = TRUE)
+
+set.seed(42)
+maaslin_res <- Maaslin2(
+  input_data = as.data.frame(count_paired),
+  input_metadata = meta_paired,
+  output = maaslin_dir,
+  fixed_effects = "group",
+  random_effects = "patient",
+  reference = "group,Normal",
+  normalization = "TSS",
+  transform = "LOG",
+  analysis_method = "LM",
+  min_prevalence = 0.10,
+  min_abundance = 0.0,
+  max_significance = 0.05,
+  plot_heatmap = FALSE,
+  plot_scatter = FALSE,
+  cores = 4
+)
+saveRDS(maaslin_res, file.path(DIR_RDS, "MaAsLin2_paired_TN.rds"))
+
+maaslin_tab <- maaslin_res$results %>%
+  filter(metadata == "group") %>%
+  transmute(
+    taxon = feature,
+    lfc = coef,
+    se = stderr,
+    p = pval,
+    q = qval,
+    diff = qval < 0.05,
+    direction = case_when(
+      qval < 0.05 & coef > 0 ~ "Up_in_Tumour",
+      qval < 0.05 & coef < 0 ~ "Down_in_Tumour",
+      TRUE ~ "NS"
+    )
+  )
+
+n_each <- 10
+
+top_up <- maaslin_tab %>%
+  filter(diff, direction == "Up_in_Tumour") %>%
+  arrange(desc(lfc)) %>%
+  slice_head(n = n_each)
+
+top_down <- maaslin_tab %>%
+  filter(diff, direction == "Down_in_Tumour") %>%
+  arrange(lfc) %>%
+  slice_head(n = n_each)
+
+# Combine: up first (largest at top), then down (most negative at bottom)
+top_da <- bind_rows(top_up, top_down) %>%
+  mutate(
+    taxon_short = gsub("^s__", "", taxon),
+    taxon_short = factor(taxon_short, levels = rev(taxon_short))
+  )
+
+p_top_da <- ggplot(top_da, aes(lfc, taxon_short, fill = direction)) +
+  geom_col(width = 0.7) +
+  geom_errorbarh(aes(xmin = lfc - se, xmax = lfc + se),
+                 width = 0.25, colour = "grey30") +
+  geom_vline(xintercept = 0, colour = "black") +
+  scale_fill_manual(values = c(Up_in_Tumour = "#9A342C",
+                               Down_in_Tumour = "#126CAA")) +
+  labs(x = "MaAsLin2 coefficient (mean +/- SE)",
+       y = NULL, fill = NULL) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1, size = 8),
+        legend.position = "top")
+
+pdf(file.path(DIR_RES, "DA_top10each_barplot_split.pdf"),
+    width = 6, height = 4)
+print(p_top_da)
 dev.off()
