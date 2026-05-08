@@ -838,7 +838,6 @@ long_total_plot <- bind_rows(
     mutate(variable = "rank_total", group = "non-candidate")
 ) %>%
   mutate(
-    Species = factor(Species, levels = levels(long_total$Species)),
     bar_height = ifelse(
       group == "candidate",
       rank(-value[group == "candidate"], na.last = FALSE)[match(value, value[group == "candidate"])],
@@ -1192,6 +1191,6 @@ p_dir <- ggplot(
 final_plot_tn <- p_pcoa_enriched + (p_nest / p_dir) +
   plot_layout(widths = c(2.2, 1))
 
-pdf(file.path(DIR_RES, "F_pcoa_nestedness_check.pdf"), width = 9, height = 4.5)
+pdf(file.path(DIR_RES, "F_pcoa_nestedness_check.pdf"), width = 8, height = 4.5)
 print(final_plot_tn)
 dev.off()
