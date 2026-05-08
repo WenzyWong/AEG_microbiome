@@ -8,7 +8,7 @@
 #remotes::install_github("taowenmicro/EasyStat")
 #remotes::install_github("taowenmicro/ggClusterNet")
 #remotes::install_github("zdk123/SpiecEasi")
-
+set.seed(42)
 library(vegan)
 library(dplyr)
 library(ggpubr)
@@ -683,8 +683,6 @@ g <- graph_from_data_frame(
     rename(name = node_id)
 )
 
-set.seed(42)
-
 node_colours <- c(
   "Normal-enriched" = "#4393C3",
   "Tumour-enriched" = "#DF8F44",
@@ -977,3 +975,223 @@ for (sp in species_list) {
   print(p)
   dev.off()
 }
+
+################
+# Build sample metadata for all C/N samples in mtx_cpm
+meta_all <- data.frame(
+  sample = colnames(mtx_cpm),
+  patient = gsub("^[CN]", "", colnames(mtx_cpm)),
+  group = ifelse(grepl("^C", colnames(mtx_cpm)), "Tumour", "Normal"),
+  stringsAsFactors = FALSE
+)
+
+# Merge clinical variables (Tumour-specific clinical info propagated via patient ID)
+clin_lite <- clinical %>%
+  transmute(
+    patient = sprintf("%03d", as.integer(No.)),
+    Siewert = `Siewert type`,
+    Distance = `Distance from the tumor center to the esophagogastric junction()`,
+    Stage = `Pathological stage`,
+    Differentiation = `Differentiated degree`,
+    Age = Age,
+    Smoking = Smoking,
+    Alcohol = Alcohol
+  )
+meta_all <- meta_all %>% left_join(clin_lite, by = "patient")
+
+# Bray-Curtis on relative-abundance-transformed CPM
+mtx_rel <- sweep(mtx_cpm, 2, colSums(mtx_cpm), "/")
+bc_dist <- vegdist(t(mtx_rel), method = "bray")
+
+# PERMANOVA: group effect (with patient as strata for paired structure)
+permanova_group <- adonis2(
+  bc_dist ~ group,
+  data = meta_all,
+  permutations = 999,
+  strata = meta_all$patient,
+  by = "terms"
+)
+
+# PERMDISP: dispersion homogeneity
+bd <- betadisper(bc_dist, meta_all$group)
+permdisp_res <- permutest(bd, permutations = 999)
+saveRDS(permdisp_res, file.path(DIR_RDS, "PERMDISP_group.rds"))
+
+# PERMANOVA on tumour-only samples for clinical drivers
+meta_t <- meta_all %>% filter(group == "Tumour") %>%
+  mutate(
+    Stage_num = case_when(
+      Stage == "IB" ~ 1.5, Stage == "IIA" ~ 2, Stage == "IIB" ~ 2.5,
+      Stage == "IIIA" ~ 3, Stage == "IIIB" ~ 3.3, Stage == "IIIC" ~ 3.6,
+      Stage == "IV" ~ 4, TRUE ~ NA_real_
+    ),
+    Diff_num = case_when(
+      Differentiation == "Moderately differentiated" ~ 1,
+      Differentiation == "Low differentiated" ~ 2,
+      Differentiation == "Poorly differentiated" ~ 3,
+      TRUE ~ NA_real_
+    )
+  )
+
+bc_dist_t <- vegdist(t(mtx_rel[, meta_t$sample]), method = "bray")
+meta_t_complete <- meta_t %>%
+  filter(!is.na(Stage_num), !is.na(Diff_num),
+         !is.na(Siewert), !is.na(Distance), !is.na(Age))
+keep_idx <- match(meta_t_complete$sample, meta_t$sample)
+bc_dist_t_sub <- as.dist(as.matrix(bc_dist_t)[keep_idx, keep_idx])
+
+permanova_clin <- adonis2(
+  bc_dist_t_sub ~ Age + Stage_num + Diff_num + Siewert + Distance,
+  data = meta_t_complete,
+  permutations = 999,
+  by = "margin"
+)
+
+# PCoA visualisation with envfit overlay
+pcoa <- cmdscale(bc_dist, k = 2, eig = TRUE)
+pcoa_df <- data.frame(
+  PCo1 = pcoa$points[, 1],
+  PCo2 = pcoa$points[, 2],
+  sample = rownames(pcoa$points)
+) %>% left_join(meta_all, by = "sample")
+
+eig_pct <- round(pcoa$eig[1:2] / sum(pcoa$eig[pcoa$eig > 0]) * 100, 1)
+
+# Nestedness vs turnover decomposition (Baselga framework) within tumour samples
+mtx_pa <- (mtx_rel > 0) * 1
+beta_comp <- beta.multi(t(mtx_pa[, meta_all$sample[meta_all$group == "Tumour"]]),
+                        index.family = "sorensen") # Not nested
+cat(beta_comp)
+
+# Pairwise nestedness for paired patients
+paired_ids <- intersect(
+  gsub("^C", "", grep("^C", colnames(mtx_count), value = TRUE)),
+  gsub("^N", "", grep("^N", colnames(mtx_count), value = TRUE))
+)
+
+cross_nest <- lapply(paired_ids, function(p) {
+  pair_mat <- t(mtx_pa[, c(paste0("N", p), paste0("C", p))])
+  bp <- beta.pair(pair_mat, index.family = "sorensen")
+  data.frame(
+    patient = p,
+    sorensen = as.numeric(bp$beta.sor),
+    turnover = as.numeric(bp$beta.sim),
+    nestedness = as.numeric(bp$beta.sne),
+    nest_ratio = as.numeric(bp$beta.sne) / as.numeric(bp$beta.sor)
+  )
+}) %>% do.call(rbind, .)
+
+# Direction check: which side has fewer species (the nested one)?
+cross_nest$tumour_nested_in_normal <- sapply(paired_ids, function(p) {
+  sum(mtx_pa[, paste0("C", p)]) < sum(mtx_pa[, paste0("N", p)])
+})
+
+summary(cross_nest$nest_ratio)
+table(cross_nest$tumour_nested_in_normal)
+
+# Compute species richness per sample (number of detected taxa)
+richness <- colSums((mtx_rel > 0) * 1)
+pcoa_df$richness <- richness[pcoa_df$sample]
+
+# Build paired-line dataframe for connecting T-N pairs
+paired_ids_pcoa <- intersect(
+  gsub("^C", "", pcoa_df$sample[pcoa_df$group == "Tumour"]),
+  gsub("^N", "", pcoa_df$sample[pcoa_df$group == "Normal"])
+)
+pair_lines <- lapply(paired_ids_pcoa, function(p) {
+  t_pt <- pcoa_df[pcoa_df$sample == paste0("C", p), c("PCo1", "PCo2")]
+  n_pt <- pcoa_df[pcoa_df$sample == paste0("N", p), c("PCo1", "PCo2")]
+  data.frame(
+    patient = p,
+    x = n_pt$PCo1, y = n_pt$PCo2,
+    xend = t_pt$PCo1, yend = t_pt$PCo2
+  )
+}) %>% do.call(rbind, .)
+
+# Annotate direction: does tumour have fewer species than its paired normal?
+pair_lines$tumour_smaller <- sapply(paired_ids_pcoa, function(p) {
+  richness[paste0("C", p)] < richness[paste0("N", p)]
+})
+
+# Main PCoA panel: richness-encoded points + paired connectors
+p_pcoa_enriched <- ggplot() +
+  geom_segment(
+    data = pair_lines,
+    aes(x = x, y = y, xend = xend, yend = yend, colour = tumour_smaller),
+    alpha = 0.35, linewidth = 0.3
+  ) +
+  scale_colour_manual(
+    values = c(`TRUE` = "#9A342C", `FALSE` = "grey60"),
+    name = "Tumour richness < Normal",
+    labels = c(`TRUE` = "Yes (nested-like)", `FALSE` = "No")
+  ) +
+  ggnewscale::new_scale_colour() +
+  stat_ellipse(
+    data = pcoa_df,
+    aes(PCo1, PCo2, fill = group),
+    geom = "polygon", alpha = 0.12, colour = NA
+  ) +
+  geom_point(
+    data = pcoa_df,
+    aes(PCo1, PCo2, colour = group, size = richness),
+    alpha = 0.75
+  ) +
+  scale_colour_manual(values = c(Normal = "#126CAA", Tumour = "#9A342C")) +
+  scale_fill_manual(values = c(Normal = "#126CAA", Tumour = "#9A342C")) +
+  scale_size_continuous(range = c(0.8, 3.5), name = "Species richness") +
+  labs(
+    x = paste0("PCo1 (", eig_pct[1], "%)"),
+    y = paste0("PCo2 (", eig_pct[2], "%)"),
+    title = sprintf(
+      "PERMANOVA R2 = %.3f, p = %.3f",
+      permanova_group$R2[1], permanova_group$`Pr(>F)`[1]
+    )
+  ) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+
+# Marginal density of nestedness ratio
+p_nest <- ggplot(cross_nest, aes(x = nest_ratio)) +
+  geom_density(fill = "#9A342C", alpha = 0.4, colour = "#9A342C") +
+  geom_vline(xintercept = median(cross_nest$nest_ratio),
+             linetype = "dashed", colour = "black") +
+  geom_vline(xintercept = 1, linetype = "dotted", colour = "grey40") +
+  annotate("text",
+           x = median(cross_nest$nest_ratio),
+           y = Inf, vjust = 1.5, hjust = -0.1,
+           label = sprintf("median = %.2f",
+                           median(cross_nest$nest_ratio)),
+           size = 3) +
+  xlim(0, 1) +
+  labs(x = "Nestedness / Total dissimilarity\n(per paired T-N)",
+       y = "Density") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
+
+# Direction summary as small inset
+n_smaller <- sum(pair_lines$tumour_smaller)
+n_total <- nrow(pair_lines)
+p_dir <- ggplot(
+  data.frame(
+    cat = c("T < N\n(nested-like)", "T >= N"),
+    n = c(n_smaller, n_total - n_smaller)
+  ),
+  aes(x = cat, y = n, fill = cat)
+) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = c("#9A342C", "grey70")) +
+  labs(x = NULL, y = "Patient pairs") +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        legend.position = "none")
+
+final_plot_tn <- p_pcoa_enriched + (p_nest / p_dir) +
+  plot_layout(widths = c(2.2, 1))
+
+pdf(file.path(DIR_RES, "F_pcoa_nestedness_check.pdf"), width = 9, height = 4.5)
+print(final_plot_tn)
+dev.off()
