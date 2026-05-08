@@ -466,38 +466,6 @@ for (col in rank_cols) {
                         node[[col]])
 }
 
-# Build standard / short species names and keep only the candidate ones for labelling
-# Note: species_list is generated further below; this block must run after it.
-node_highlight <- node %>%
-  mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
-                                gsub("s__", "", Rank7)),
-         short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
-                             ".", gsub("s__", "", Rank7))) %>%
-  filter(standard_name %in% species_list)
-
-pdf(file.path(DIR_RES, "Net_all_candidates.pdf"), width = 12, height = 5)
-ggplot() + 
-  geom_segment(data = edge, alpha = 0.3,
-               aes(x = X1, y = Y1, xend = X2, yend = Y2, 
-                   linewidth = weight)) +
-  scale_linewidth_continuous(range = c(0.01, 0.05)) +
-  geom_point(data = node, pch = 21, color = "gray40",
-             aes(X1, X2, fill = Rank2, size = igraph.degree)) +
-  scale_fill_manual(values = paletteer_d("ggsci::nrc_npg")) +
-  facet_wrap(.~ label, scales = "free_y", nrow = 1) +
-  geom_text(data = node_highlight, aes(X1, X2, label = short_name)) +
-  scale_size(range = c(0.8, 5)) +
-  scale_x_continuous(breaks = NULL) +
-  scale_y_continuous(breaks = NULL) +
-  theme(panel.background = element_blank(),
-        plot.title = element_text(hjust = 0.5),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.background = element_rect(colour = NA),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank())
-dev.off()
-
 # Other plots
 plots <- tab[[1]]
 
@@ -856,6 +824,38 @@ write.csv(long_total_plot[ , c(1, 3, 4)],
 species_list <- long_total_plot[long_total_plot$group == "candidate", "Species"] %>%
   droplevels(.) %>%
   as.character()
+
+# Network plot highlighting the candidate species (uses node/edge from the
+# earlier network.pip() output; placed here so species_list is already defined)
+node_highlight <- node %>%
+  mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
+                                gsub("s__", "", Rank7)),
+         short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
+                             ".", gsub("s__", "", Rank7))) %>%
+  filter(standard_name %in% species_list)
+
+pdf(file.path(DIR_RES, "Net_all_candidates.pdf"), width = 12, height = 5)
+ggplot() +
+  geom_segment(data = edge, alpha = 0.3,
+               aes(x = X1, y = Y1, xend = X2, yend = Y2,
+                   linewidth = weight)) +
+  scale_linewidth_continuous(range = c(0.01, 0.05)) +
+  geom_point(data = node, pch = 21, color = "gray40",
+             aes(X1, X2, fill = Rank2, size = igraph.degree)) +
+  scale_fill_manual(values = paletteer_d("ggsci::nrc_npg")) +
+  facet_wrap(.~ label, scales = "free_y", nrow = 1) +
+  geom_text(data = node_highlight, aes(X1, X2, label = short_name)) +
+  scale_size(range = c(0.8, 5)) +
+  scale_x_continuous(breaks = NULL) +
+  scale_y_continuous(breaks = NULL) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.background = element_rect(colour = NA),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+dev.off()
 
 shared_samples <- intersect(names(shan_tumour), colnames(mtx_cpm))
 
