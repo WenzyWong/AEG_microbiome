@@ -67,8 +67,8 @@ saveRDS(phospho, file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
 
 #################
 # Formal analysis
-phospho   <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
-mtx_cpm   <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
+phospho <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
+mtx_cpm <- readRDS(file.path(DIR_RDS, "sAEG_CPM_RNA_FiltMyco.rds"))
 target_sp <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"),
                       row.names = 1)
 
@@ -101,7 +101,7 @@ feat_prev <- phos_detect %>%
 phos_detect_f <- phos_detect %>%
   filter(feature %in% feat_prev$feature)
 
-#####################################
+######################################
 # Logistic regression for each species
 run_logit_one_sp <- function(sp) {
   abund <- data.frame(
@@ -492,7 +492,7 @@ gdsc_target <- read.csv(file.path(DIR_TAB, "Drug_list2023.csv"))
 # Plot predicted drug responses: idwas
 draw_idwas_mtx <- scale(idwas_mtx, center = T)
 col_zs <- circlize::colorRamp2(c(-10, 0, 10), c("#2166AC", "white", "#B2182B"))
-pdf(file.path(DIR_SUP, "A_heatmap_idwas_samples.pdf"), width = 6, height = 10)
+pdf(file.path(DIR_FIG, "A_heatmap_idwas_samples.pdf"), width = 6, height = 10)
 Heatmap(draw_idwas_mtx, show_column_names = F, 
         name = "Scaled response", column_title = "Samples",
         column_title_side = "bottom",
@@ -623,7 +623,7 @@ care_pred_matrix <- -care_pred_matrix # To align with IDWAS
 
 write.csv(care_pred_matrix, file.path(DIR_TAB, "CARE_predicted_responses.csv"))
 
-pdf(file.path(DIR_SUP, "Heatmap_care_samples.pdf"), width = 8, height = 10)
+pdf(file.path(DIR_FIG, "Heatmap_care_samples.pdf"), width = 8, height = 10)
 Heatmap(care_pred_matrix, name = "CARE response", show_column_names = F)
 dev.off()
 
@@ -1162,130 +1162,40 @@ ggvenn(venn_both,
        fill_color = paletteer_d("ggsci::default_jama")[c(3, 5, 2, 4)],
        fill_alpha = 0.7,
        stroke_color = "white")
-dev.off()
 
-# Dot plot showing clusters vs drug pathways
-sp_cluster_df <- sp_cluster_df %>%
-  dplyr::filter(species %in% colnames(cor_r_idwas)) %>%
-  mutate(sp_cluster = as.integer(sp_cluster))
+# Heatmap of the log2OR association matrix with cluster annotations
+# Top-variable rows only to keep the figure readable.
+n_top <- min(120, nrow(mat_f))
+top_rows <- order(rowSums(mat_f != 0), decreasing = TRUE)[seq_len(n_top)]
+mat_top  <- mat_f[top_rows, , drop = FALSE]
 
-# Drug to pathway lookup (drop unannotated rows so the panel is interpretable)
-drug_path_df <- pathway_all %>%
-  as.data.frame() %>%
-  dplyr::filter(!is.na(Target.pathway), Target.pathway != "Unannotated") %>%
-  dplyr::filter(Name %in% rownames(cor_r_idwas)) %>%
-  distinct(Name, Target.pathway)
-
-# Long-format correlation table: drug x species
-r_long <- as.data.frame(cor_r_idwas) %>%
-  tibble::rownames_to_column("Drug") %>%
-  pivot_longer(-Drug, names_to = "species", values_to = "r")
-
-p_long <- as.data.frame(cor_p_idwas) %>%
-  tibble::rownames_to_column("Drug") %>%
-  pivot_longer(-Drug, names_to = "species", values_to = "padj")
-
-cor_long <- r_long %>%
-  inner_join(p_long, by = c("Drug", "species")) %>%
-  inner_join(drug_path_df, by = c("Drug" = "Name")) %>%
-  inner_join(sp_cluster_df, by = "species") %>%
-  dplyr::filter(is.finite(r), is.finite(padj))
-
-# Aggregate at species-cluster x drug-pathway level
-agg_df <- cor_long %>%
-  group_by(sp_cluster, Target.pathway) %>%
-  summarise(
-    mean_r       = mean(r, na.rm = TRUE),
-    n_total      = n(),
-    n_sig_pos    = sum(r >  0.3 & padj < 0.05, na.rm = TRUE),
-    n_sig_neg    = sum(r < -0.3 & padj < 0.05, na.rm = TRUE),
-    n_sig        = n_sig_pos + n_sig_neg,
-    n_sp         = n_distinct(species),
-    n_drug       = n_distinct(Drug),
-    sig_ratio    = n_sig / n_total,
-    .groups = "drop"
-  )
-
-# Hypergeometric enrichment per cell
-N_total <- sum(cor_long$padj < 0.05 & abs(cor_long$r) > 0.3, na.rm = TRUE)
-N_pop   <- nrow(cor_long)
-
-bg_path <- cor_long %>%
-  group_by(Target.pathway) %>%
-  summarise(K = n(), .groups = "drop")
-
-bg_clu <- cor_long %>%
-  group_by(sp_cluster) %>%
-  summarise(M = sum(padj < 0.05 & abs(r) > 0.3, na.rm = TRUE),
-            .groups = "drop")
-
-agg_df <- agg_df %>%
-  left_join(bg_path, by = "Target.pathway") %>%
-  left_join(bg_clu,  by = "sp_cluster") %>%
-  rowwise() %>%
-  mutate(
-    pval = phyper(n_sig - 1, K, N_pop - K, M, lower.tail = FALSE)
-  ) %>%
-  ungroup() %>%
-  mutate(padj_enrich = p.adjust(pval, method = "BH"))
-
-# Cluster labels (reuse top pathway per cluster from the upstream analysis)
-if (exists("cluster_label_vec")) {
-  agg_df <- agg_df %>%
-    mutate(cluster_lab = paste0("C", sp_cluster, ": ",
-                                cluster_label_vec[as.character(sp_cluster)]))
-} else {
-  agg_df <- agg_df %>% mutate(cluster_lab = paste0("Cluster ", sp_cluster))
-}
-
-# Order pathways by overall mean_r so the dotplot reads diagonally
-pathway_order <- agg_df %>%
-  group_by(Target.pathway) %>%
-  summarise(score = sum(mean_r * n_sig, na.rm = TRUE), .groups = "drop") %>%
-  arrange(score) %>%
-  pull(Target.pathway)
-
-agg_df <- agg_df %>%
-  mutate(
-    Target.pathway = factor(Target.pathway, levels = pathway_order),
-    cluster_lab    = factor(cluster_lab,
-                            levels = sort(unique(cluster_lab))),
-    sig_flag       = ifelse(padj_enrich < 0.1, "*", "")
-  )
-
-write.csv(agg_df,
-          file.path(DIR_TAB, "Phospho_spCluster_drugPathway_enrichment.csv"),
-          row.names = FALSE)
-
-# Symmetric color limit for diverging palette
-lim <- max(abs(agg_df$mean_r), na.rm = TRUE)
-
-p_dot <- ggplot(agg_df,
-                aes(x = cluster_lab, y = Target.pathway,
-                    size = n_sig, color = mean_r)) +
-  geom_point() +
-  geom_text(aes(label = sig_flag), color = "black",
-            size = 4, vjust = 0.75, show.legend = FALSE) +
-  scale_color_gradientn(
-    colours = rev(RColorBrewer::brewer.pal(11, "RdBu")),
-    limits  = c(-lim, lim),
-    name    = "Mean Rs"
-  ) +
-  scale_size_continuous(range = c(1, 8), name = "Sig. drug-species pairs") +
-  labs(x = NULL, y = NULL,
-       title = "Species cluster vs drug target pathway") +
-  theme_bw(base_size = 11) +
-  theme(
-    axis.text.x      = element_text(angle = 90, hjust = 1, color = "black"),
-    axis.text.y      = element_text(color = "black"),
-    panel.grid.minor = element_blank(),
-    plot.title       = element_text(face = "bold")
-  )
-
-ggsave(
-  filename = file.path(DIR_FIG, "Dotplot_spCluster_vs_drugPathway.pdf"),
-  plot     = p_dot,
-  width    = 6,
-  height   = 7
+col_lr <- circlize::colorRamp2(
+  c(-max(abs(mat_top)), 0, max(abs(mat_top))),
+  c("#126CAA", "white", "#9A342C")
+)
+ann_col <- HeatmapAnnotation(
+  sp_cluster = factor(sp_cluster[colnames(mat_top)]),
+  col = list(sp_cluster = setNames(
+    paletteer_d("ggsci::default_nejm")[2:5],
+    as.character(sort(unique(sp_cluster)))
+  ))
+)
+ann_row <- rowAnnotation(
+  site_cluster = factor(site_cluster[rownames(mat_top)]),
+  col = list(site_cluster = setNames(
+    paletteer_d("ggsci::signature_substitutions_cosmic")[seq_len(k_site)],
+    as.character(sort(unique(site_cluster)))
+  ))
 )
 
+pdf(file.path(DIR_FIG, "Heatmap_logOR_with_clusters.pdf"), width = 4.5, height = 9)
+draw(Heatmap(
+  mat_top, name = "log2(OR)", col = col_lr,
+  cluster_rows = TRUE, cluster_columns = TRUE,
+  show_row_names = FALSE,
+  column_names_gp = gpar(fontsize = 8),
+  top_annotation = ann_col,
+  left_annotation = ann_row,
+  column_title = sprintf("Top %d phosphosites by significance count", n_top)
+))
+dev.off()
