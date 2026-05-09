@@ -18,7 +18,6 @@ library(ComplexHeatmap)
 library(gridExtra)
 library(tools)
 library(stringr)
-library(patchwork)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
@@ -34,7 +33,6 @@ library(RColorBrewer)
 library(compositions)
 library(glmnet)
 # Differential
-library(betapart)
 library(Maaslin2)
 
 setwd("/data/yzwang/project/AEG_seiri/")
@@ -946,7 +944,8 @@ permanova_group <- adonis2(
 )
 
 # PERMDISP: dispersion homogeneity
-permdisp_res <- permutest(betadisper(bc_dist, meta_all$group), permutations = 999)
+permdisp_obj <- betadisper(bc_dist, meta_all$group)
+permdisp_res <- permutest(permdisp_obj, permutations = 999)
 saveRDS(permdisp_res, file.path(DIR_RDS, "PERMDISP_group.rds"))
 
 # PERMANOVA on tumour-only samples for clinical drivers
@@ -991,10 +990,10 @@ eig_pct <- round(pcoa$eig[1:2] / sum(pcoa$eig[pcoa$eig > 0]) * 100, 1)
 
 # Nestedness vs turnover decomposition (Baselga framework) within tumour samples
 mtx_pa <- (mtx_rel > 0) * 1
-beta.multi(
+cat(beta.multi(
   t(mtx_pa[, meta_all$sample[meta_all$group == "Tumour"]]),
   index.family = "sorensen"
-) # Not nested
+)) # Not nested
 
 # Pairwise nestedness for paired patients
 paired_ids <- intersect(
@@ -1255,4 +1254,102 @@ print(
           axis.text = element_text(colour = 1),
           legend.position = "right")
 )
+dev.off()
+
+# Reuse the paired tumour-normal samples already defined for MaAsLin2
+mtx_int <- round(mtx_count[, c(paste0("N", paired_ids), paste0("C", paired_ids))])
+
+# Rarefaction curves to confirm sequencing depth saturates richness
+pdf(file.path(DIR_RES, "S_rarefaction.pdf"), width = 5, height = 4)
+par(mar = c(4, 4, 1, 1))
+rarecurve(t(mtx_int), step = 500, label = FALSE,
+          col = ifelse(grepl("^C", colnames(mtx_int)), "#9A342C", "#126CAA"),
+          xlab = "Read counts", ylab = "Observed species")
+legend("bottomright", legend = c("Tumour", "Normal"),
+       col = c("#9A342C", "#126CAA"), lty = 1, bty = "n")
+dev.off()
+
+# Network topology metrics per group
+node_full <- net_dt$net.cor.matrix$node
+edge_full <- net_dt$net.cor.matrix$edge
+
+build_grp_graph <- function(grp) {
+  nd <- node_full[node_full$label == grp & node_full$igraph.degree > 0, ]
+  ed <- edge_full[edge_full$label == grp &
+                    edge_full$OTU_1 %in% nd$ID &
+                    edge_full$OTU_2 %in% nd$ID, ]
+  igraph::graph_from_data_frame(
+    ed[, c("OTU_1", "OTU_2")],
+    vertices = data.frame(name = nd$ID),
+    directed = FALSE
+  ) %>% igraph::simplify()
+}
+groups_net <- unique(node_full$label)
+graphs_net <- setNames(lapply(groups_net, build_grp_graph), groups_net)
+
+topo_df <- lapply(groups_net, function(g) {
+  ig <- graphs_net[[g]]
+  data.frame(
+    Group      = g,
+    Nodes      = igraph::vcount(ig),
+    Edges      = igraph::ecount(ig),
+    Density    = igraph::edge_density(ig),
+    AvgDegree  = mean(igraph::degree(ig)),
+    Clustering = igraph::transitivity(ig, type = "global"),
+    Modularity = igraph::modularity(igraph::cluster_fast_greedy(ig))
+  )
+}) %>% do.call(rbind, .) %>%
+  mutate(Group = c("Tumour", "Normal"))
+write.csv(topo_df, file.path(DIR_TAB, "Res_network_topology.csv"), row.names = FALSE)
+
+pdf(file.path(DIR_RES, "S_network_topology.pdf"), width = 5, height = 4)
+ggplot(
+  reshape2::melt(topo_df, id.vars = "Group",
+                 variable.name = "metric", value.name = "value"),
+  aes(Group, value, fill = Group)
+) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = signif(value, 3)), vjust = -0.4, size = 2.5) +
+  scale_fill_manual(values = c(Normal = "#126CAA", Tumour = "#9A342C")) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 2) +
+  xlab(NULL) + ylab(NULL) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        strip.background = element_blank(),
+        legend.position = "none")
+dev.off()
+
+# Mean abundance vs |effect size| for all DA species
+mtx_rel <- sweep(mtx_count[, paired_samples, drop = FALSE], 2,
+                 colSums(mtx_count[, paired_samples, drop = FALSE]), "/")
+
+abund_df <- data.frame(
+  taxon = rownames(mtx_count),
+  mean_abundance = rowMeans(mtx_rel),
+  prevalence = rowMeans(mtx_count[, paired_samples, drop = FALSE] > 0)
+) %>%
+  inner_join(maaslin_tab, by = "taxon")
+
+pdf(file.path(DIR_RES, "S_DA_abundance_effect.pdf"), width = 5.5, height = 3.6)
+ggplot(abund_df, aes(mean_abundance, abs(lfc),
+                     colour = direction, size = prevalence)) +
+  geom_point(alpha = 0.7) +
+  ggrepel::geom_text_repel(
+    data = subset(abund_df,
+                  abs(lfc) > log2(1.5) &
+                    mean_abundance > 1e-3 &
+                    prevalence > 0.6),
+    aes(label = taxon),
+    size = 2.5, max.overlaps = 15, show.legend = FALSE
+  ) +
+  scale_x_log10(labels = scales::label_log()) +
+  scale_size_continuous(range = c(0.6, 3)) +
+  scale_colour_manual(values = c(Up_in_Tumour   = "#9A342C",
+                                 Down_in_Tumour = "#126CAA",
+                                 NS             = "grey80")) +
+  labs(x = "Mean relative abundance (log10)",
+       y = "|MaAsLin2 coefficient|") +
+  theme_test()
 dev.off()
