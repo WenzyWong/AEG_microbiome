@@ -87,19 +87,12 @@ phos_detect <- phos_tumour %>%
   pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
   mutate(present = as.integer(intensity > 3.891872))
 
-# Pre-filter features by prevalence (shared across all species)
-feat_prev <- phos_detect %>%
-  group_by(feature) %>%
-  summarise(
-    n_present = sum(present),
-    n_absent  = sum(present == 0),
-    .groups   = "drop"
-  ) %>%
-  mutate(prop_present = n_present / (n_present + n_absent)) %>%
-  filter(prop_present > 0.1, prop_present < 0.9)
-
 phos_detect_f <- phos_detect %>%
-  filter(feature %in% feat_prev$feature)
+  group_by(feature) %>%
+  mutate(prop_present = mean(present)) %>%
+  ungroup() %>%
+  filter(prop_present > 0.1, prop_present < 0.9) %>%
+  select(-prop_present)
 
 ######################################
 # Logistic regression for each species
@@ -166,12 +159,10 @@ dim(mat_f)
 
 # Delegate clusters
 hc_row <- hclust(as.dist(1 - cor(t(mat_f))), method = "ward.D2")
-k_site <- 6
-site_cluster <- cutree(hc_row, k = k_site)
+site_cluster <- cutree(hc_row, k = 6)
 
 hc_col <- hclust(as.dist(1 - cor(mat_f)), method = "ward.D2")
-k_sp <- 4
-sp_cluster <- cutree(hc_col, k = k_sp)
+sp_cluster <- cutree(hc_col, k = 4)
 
 table(site_cluster)
 table(sp_cluster)
@@ -351,13 +342,6 @@ y_range <- range(sp_umap_df$UMAP2)
 x_pad   <- diff(x_range) * 0.08
 y_pad   <- diff(y_range) * 0.08
 
-outline <- data.frame(
-  x = c(x_range[1] - x_pad, x_range[2] + x_pad,
-        x_range[2] + x_pad, x_range[1] - x_pad),
-  y = c(y_range[1] - y_pad, y_range[1] - y_pad,
-        y_range[2] + y_pad, y_range[2] + y_pad)
-)
-
 arrow_spec <- arrow(length = unit(0.25, "cm"), type = "closed")
 
 centroids <- sp_umap_df %>%
@@ -425,11 +409,13 @@ ggplot(sp_umap_df, aes(UMAP1, UMAP2)) +
   labs(x = "UMAP 1", y = "UMAP 2")
 dev.off()
 
-# Stack plot
-site_grp_vec <- cutree(hc_row, k = 6)
-
 assigned <- character(0)
-grp_label <- data.frame(feature = names(site_grp_vec), grp = as.integer(site_grp_vec)) %>%
+site_cluster_df <- data.frame(
+  feature = names(site_cluster),
+  grp = as.integer(site_cluster)
+)
+
+grp_label <- site_cluster_df %>%
   inner_join(site_anno, by = "feature", relationship = "many-to-many") %>%
   count(grp, pathway, name = "n") %>%
   group_by(grp) %>%
@@ -446,8 +432,7 @@ print(grp_label)
 
 stacked_df <- mat_df %>%
   filter(p.value < 0.05) %>%
-  inner_join(data.frame(feature = names(site_grp_vec), grp = as.integer(site_grp_vec)),
-             by = "feature") %>%
+  inner_join(site_cluster_df, by = "feature") %>%
   group_by(species, grp) %>%
   summarise(score = sum(abs(log2OR)), .groups = "drop_last") %>%
   mutate(prop = score / sum(score)) %>%
@@ -475,28 +460,53 @@ dev.off()
 ###############
 # Drug response
 # IDWAS
-# Load data
-idwas_drug <- readxl::read_excel(file.path(DIR_TAB, "IDWAS_Supplemental_Table_S2.xlsx"), 
-                                 skip = 1) %>%
-  select(Drug)
-
 idwas_mtx <- readRDS(file.path(DIR_RDS, "drugPred_Mtx.rds"))
-idwas_tumour_mtx <- idwas_mtx[ , grep("C", colnames(idwas_mtx))]
-
-abund <- sort(apply(mtx_cpm[, grep("C", colnames(mtx_cpm))], 
-                    MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
-abund_mtx_tumour <- mtx_cpm[target_sp$Species, grep("C", colnames(mtx_cpm))] / 1e+4
+abund_mtx <- mtx_cpm[target_sp$Species, grep("C", colnames(mtx_cpm))] / 1e+4
 
 gdsc_target <- read.csv(file.path(DIR_TAB, "Drug_list2023.csv"))
 
+apply_rename <- function(m, map) {
+  rn <- rownames(m)
+  rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
+  rownames(m) <- rn
+  m
+}
+
+build_pathway_annotation <- function(drugs, gdsc_target) {
+  pathway_all <- gdsc_target[gdsc_target$Name %in% drugs,
+                             c("Name", "Target.pathway")]
+  pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+  rename_map <- setNames(setdiff(drugs, pathway_all$Name),
+                         setdiff(drugs, pathway_all$Name))
+  
+  for (drug in names(rename_map)) {
+    hit <- grep(drug, gdsc_target$Synonyms)
+    drug_name <- gdsc_target$Name[hit][1]
+    drug_pathway <- gdsc_target$Target.pathway[hit][1]
+    if (is.na(drug_name)) {
+      pathway_all <- rbind(pathway_all, c(drug, "Unannotated"))
+    } else {
+      rename_map[drug] <- drug_name
+      pathway_all <- rbind(pathway_all, c(drug_name, drug_pathway))
+    }
+  }
+  
+  pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+  rownames(pathway_all) <- pathway_all$Name
+  list(pathway_all = pathway_all, rename_map = rename_map)
+}
+
+sig_in <- function(R, P) {
+  apply(R, 1, function(x) any(abs(x) > 0.2, na.rm = TRUE)) &
+    apply(P, 1, function(x) any(x < 0.05, na.rm = TRUE))
+}
+
 # Plot predicted drug responses: idwas
-draw_idwas_mtx <- scale(idwas_mtx, center = T)
-col_zs <- circlize::colorRamp2(c(-10, 0, 10), c("#2166AC", "white", "#B2182B"))
 pdf(file.path(DIR_FIG, "A_heatmap_idwas_samples.pdf"), width = 6, height = 10)
-Heatmap(draw_idwas_mtx, show_column_names = F, 
+Heatmap(scale(idwas_mtx, center = T), show_column_names = F,
         name = "Scaled response", column_title = "Samples",
         column_title_side = "bottom",
-        col = col_zs,
+        col = circlize::colorRamp2(c(-10, 0, 10), c("#2166AC", "white", "#B2182B")),
         row_names_gp = grid::gpar(fontsize = 6))
 dev.off()
 
@@ -526,9 +536,8 @@ hexp_tpm <- hexp_tpm[, grep("C", colnames(hexp_tpm))]
 hexp_norm <- t(apply(hexp_tpm, 1, function(gene_values) {
   (gene_values - mean(gene_values, na.rm = TRUE)) / sd(gene_values, na.rm = TRUE)
 }))
-gene_vars <- apply(hexp_norm, 1, var, na.rm = T)
-top_var_genes <- names(gene_vars)[gene_vars > median(gene_vars, na.rm = TRUE)]
-hexp_filt <- hexp_norm[top_var_genes, ]
+gene_vars <- apply(hexp_norm, 1, var, na.rm = TRUE)
+hexp_filt <- hexp_norm[names(gene_vars)[gene_vars > median(gene_vars, na.rm = TRUE)], ]
 dim(hexp_filt)
 
 # Importing CARE scores
@@ -554,7 +563,7 @@ care_aggregated <- care_score %>%
 common_genes <- intersect(rownames(hexp_filt), colnames(care_score))
 length(common_genes)
 
-care_mtx <- care_aggregated[ , common_genes]
+care_mtx <- care_aggregated[, common_genes]
 rownames(care_mtx) <- care_aggregated$Response
 
 hexp_filt <- hexp_filt[common_genes, ]
@@ -562,44 +571,32 @@ hexp_filt <- hexp_filt[common_genes, ]
 # Using gene expression and CARE matrix to predict drug response per patient
 n_top_genes <- 50
 
-drug_prediction_models <- list()
 care_feature_predictions <- list()
 
 for(drug in rownames(care_mtx)) {
   # Select top genes by absolute CARE score
   drug_care <- care_mtx[drug, ]
-  common_genes <- intersect(rownames(hexp_filt), names(drug_care))
-  drug_care_subset <- drug_care[common_genes]
+  drug_care_subset <- drug_care[intersect(rownames(hexp_filt), names(drug_care))]
   
-  top_gene_indices <- order(unlist(abs(drug_care_subset)), decreasing = TRUE)[1:n_top_genes]
-  top_genes <- names(drug_care_subset)[top_gene_indices]
+  top_genes <- names(drug_care_subset)[
+    order(unlist(abs(drug_care_subset)), decreasing = TRUE)[1:n_top_genes]
+  ]
   
   # Feature matrix: patients × top genes
   feature_matrix <- t(hexp_filt[top_genes, , drop = FALSE])
   
-  model_data <- as.data.frame(feature_matrix)
-  model_data$Sample <- rownames(feature_matrix)
-  
   pca_result <- prcomp(feature_matrix, scale. = TRUE, center = TRUE)
   n_pcs <- min(10, ncol(pca_result$x))
-  pc_scores <- pca_result$x[, 1:n_pcs]
   
   # Weights: variance explained by each PC
-  variance_explained <- pca_result$sdev[1:n_pcs]^2 / sum(pca_result$sdev^2)
-  predicted_response <- pc_scores %*% variance_explained
-  
   care_feature_predictions[[drug]] <- data.frame(
     Drug = drug,
     Sample = colnames(hexp_filt),
-    Predicted_Response = as.numeric(predicted_response),
+    Predicted_Response = as.numeric(
+      pca_result$x[, 1:n_pcs] %*% (pca_result$sdev[1:n_pcs]^2 / sum(pca_result$sdev^2))
+    ),
     N_Features = length(top_genes),
     stringsAsFactors = FALSE
-  )
-  
-  drug_prediction_models[[drug]] <- list(
-    top_genes = top_genes,
-    pca_model = pca_result,
-    variance_explained = variance_explained
   )
 }
 care_feature_pred_df <- bind_rows(care_feature_predictions)
@@ -637,46 +634,12 @@ cor_p_idwas <- cor_sp_idwas$p.adj
 rownames(cor_r_idwas) <- gsub("\\.", "-", rownames(cor_r_idwas))
 rownames(cor_p_idwas) <- gsub("\\.", "-", rownames(cor_p_idwas))
 
-drug_universe <- rownames(cor_r_idwas)
-
-pathway_all <- gdsc_target[gdsc_target$Name %in% drug_universe,
-                           c("Name", "Target.pathway")]
-pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
-potent_syn  <- base::setdiff(drug_universe, pathway_all$Name)
-
-rename_map <- setNames(potent_syn, potent_syn)
-notfound   <- c()
-for (i in seq_along(potent_syn)) {
-  hit <- grep(potent_syn[i], gdsc_target$Synonyms)
-  tmp_name <- gdsc_target$Name[hit][1]
-  tmp_path <- gdsc_target$Target.pathway[hit][1]
-  if (is.na(tmp_name)) {
-    notfound <- c(notfound, potent_syn[i])
-    pathway_all <- rbind(pathway_all, c(potent_syn[i], "Unannotated"))
-  } else {
-    rename_map[potent_syn[i]] <- tmp_name
-    pathway_all <- rbind(pathway_all, c(tmp_name, tmp_path))
-  }
-}
-
-# apply rename
-apply_rename <- function(m, map) {
-  rn <- rownames(m)
-  rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
-  rownames(m) <- rn
-  m
-}
-cor_r_idwas <- apply_rename(cor_r_idwas, rename_map)
-cor_p_idwas <- apply_rename(cor_p_idwas, rename_map)
-
-rownames(pathway_all) <- pathway_all$Name
-pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
+drug_anno <- build_pathway_annotation(rownames(cor_r_idwas), gdsc_target)
+cor_r_idwas <- apply_rename(cor_r_idwas, drug_anno$rename_map)
+cor_p_idwas <- apply_rename(cor_p_idwas, drug_anno$rename_map)
+pathway_all <- drug_anno$pathway_all
 
 # Filter
-sig_in <- function(R, P) {
-  apply(R, 1, function(x) any(abs(x) > 0.2, na.rm = TRUE)) &
-    apply(P, 1, function(x) any(x < 0.05, na.rm = TRUE))
-}
 keep <- rownames(cor_r_idwas)[sig_in(cor_r_idwas, cor_p_idwas)]
 
 # FDA-style filter from original code: drop rows containing "-" or digits, keep those with lowercase letters
@@ -712,7 +675,7 @@ build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
     sum(R[, i] < -0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
   pos_v <- vapply(seq_len(ncol(R)), function(i)
     sum(R[, i] >  0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
-  mean_abund <- rowMeans(abund_mtx_tumour[sp_cols, , drop = FALSE], na.rm = TRUE)
+  mean_abund <- rowMeans(abund_mtx[sp_cols, , drop = FALSE], na.rm = TRUE)
   
   HeatmapAnnotation(
     MeanAbund = mean_abund,
@@ -777,10 +740,6 @@ draw(ht_idwas,
      heatmap_legend_side    = "right",
      annotation_legend_side = "right")
 dev.off()
-
-library(ggplot2)
-library(dplyr)
-library(tidyr)
 
 # Per-drug significance flags across all species
 sig_pos_drug <- apply(cor_r_idwas > 0.2 & cor_p_idwas < 0.05, 1,
@@ -857,48 +816,17 @@ rownames(cor_p_idwas) <- gsub("\\.", "-", rownames(cor_p_idwas))
 rownames(cor_r_care)  <- gsub("\\.", "-", rownames(cor_r_care))
 rownames(cor_p_care)  <- gsub("\\.", "-", rownames(cor_p_care))
 
-drug_universe <- union(rownames(cor_r_idwas), rownames(cor_r_care))
-
-pathway_all <- gdsc_target[gdsc_target$Name %in% drug_universe,
-                           c("Name", "Target.pathway")]
-pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
-potent_syn  <- setdiff(drug_universe, pathway_all$Name)
-
-rename_map <- setNames(potent_syn, potent_syn)
-notfound   <- c()
-for (i in seq_along(potent_syn)) {
-  hit <- grep(potent_syn[i], gdsc_target$Synonyms)
-  tmp_name <- gdsc_target$Name[hit][1]
-  tmp_path <- gdsc_target$Target.pathway[hit][1]
-  if (is.na(tmp_name)) {
-    notfound <- c(notfound, potent_syn[i])
-    pathway_all <- rbind(pathway_all, c(potent_syn[i], "Unannotated"))
-  } else {
-    rename_map[potent_syn[i]] <- tmp_name
-    pathway_all <- rbind(pathway_all, c(tmp_name, tmp_path))
-  }
-}
-
-# apply rename to both matrices
-apply_rename <- function(m, map) {
-  rn <- rownames(m)
-  rn[rn %in% names(map)] <- map[rn[rn %in% names(map)]]
-  rownames(m) <- rn
-  m
-}
-cor_r_idwas <- apply_rename(cor_r_idwas, rename_map)
-cor_p_idwas <- apply_rename(cor_p_idwas, rename_map)
-cor_r_care  <- apply_rename(cor_r_care,  rename_map)
-cor_p_care  <- apply_rename(cor_p_care,  rename_map)
-
-pathway_all <- pathway_all[!duplicated(pathway_all$Name), ]
-rownames(pathway_all) <- pathway_all$Name
+drug_anno <- build_pathway_annotation(
+  union(rownames(cor_r_idwas), rownames(cor_r_care)),
+  gdsc_target
+)
+cor_r_idwas <- apply_rename(cor_r_idwas, drug_anno$rename_map)
+cor_p_idwas <- apply_rename(cor_p_idwas, drug_anno$rename_map)
+cor_r_care  <- apply_rename(cor_r_care,  drug_anno$rename_map)
+cor_p_care  <- apply_rename(cor_p_care,  drug_anno$rename_map)
+pathway_all <- drug_anno$pathway_all
 
 # Filter: significant in either panel
-sig_in <- function(R, P) {
-  apply(R, 1, function(x) any(abs(x) > 0.2, na.rm = TRUE)) &
-    apply(P, 1, function(x) any(x < 0.05, na.rm = TRUE))
-}
 common_drugs <- intersect(rownames(cor_r_idwas), rownames(cor_r_care))
 keep <- common_drugs[
   sig_in(cor_r_idwas[common_drugs, , drop = FALSE],
@@ -958,7 +886,7 @@ right_anno <- rowAnnotation(
 
 # Panel
 build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
-  mean_abund <- rowMeans(abund_mtx_tumour[sp_cols, , drop = FALSE], na.rm = TRUE)
+  mean_abund <- rowMeans(abund_mtx[sp_cols, , drop = FALSE], na.rm = TRUE)
   rng <- range(mean_abund, na.rm = TRUE)
   
   HeatmapAnnotation(
@@ -1183,7 +1111,7 @@ ann_col <- HeatmapAnnotation(
 ann_row <- rowAnnotation(
   site_cluster = factor(site_cluster[rownames(mat_top)]),
   col = list(site_cluster = setNames(
-    paletteer_d("ggsci::signature_substitutions_cosmic")[seq_len(k_site)],
+    paletteer_d("ggsci::signature_substitutions_cosmic")[seq_along(unique(site_cluster))],
     as.character(sort(unique(site_cluster)))
   ))
 )
