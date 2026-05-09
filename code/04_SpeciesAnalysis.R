@@ -18,6 +18,7 @@ library(ComplexHeatmap)
 library(gridExtra)
 library(tools)
 library(stringr)
+library(patchwork)
 # Network analysis requirements
 library(phyloseq)
 library(igraph)
@@ -33,6 +34,7 @@ library(RColorBrewer)
 library(compositions)
 library(glmnet)
 # Differential
+library(betapart)
 library(Maaslin2)
 
 setwd("/data/yzwang/project/AEG_seiri/")
@@ -56,34 +58,35 @@ g_abund <- sort(apply(mtx_gcpm, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
 g_abund <- g_abund[1:20]
 # Collect species rows that belong to any top-abundant genus
 index_sp <- unlist(lapply(names(g_abund),
-                         function(g) grep(g, rownames(mtx_cpm), fixed = TRUE)))
+                          function(g) grep(g, rownames(mtx_cpm), fixed = TRUE)))
 
 # Mean abundance (%) of each top-genus species; computed once and reused below
-abund_top <- apply(mtx_cpm[index_sp, ] / 1e+4, MARGIN = 1, FUN = mean)
-abund_sp_top <- data.frame(
-  # Sanitise species names so they can be used as R formula terms
-  Species   = gsub("[[:punct:]]", "_", names(abund_top)),
-  Abundance = abund_top
-) # Species within top 20 genera, regardless of their absolute abundance
+abund_sp_top <- apply(mtx_cpm[index_sp, ] / 1e+4, MARGIN = 1, FUN = mean) %>%
+  data.frame(
+    # Sanitise species names so they can be used as R formula terms
+    Species = gsub("[[:punct:]]", "_", names(.)),
+    Abundance = as.numeric(.),
+    row.names = names(.)
+  ) # Species within top 20 genera, regardless of their absolute abundance
 # Notice: rownames(abund_sp_top) differs from abund_sp_top$Species.
 # Pay attention to which one is used in downstream steps.
 
 abund_sp_top <- abund_sp_top[abund_sp_top$Abundance > 0.01, ]
 
-# draw_hr1 contains the clinical information of the samples
-draw_hr1 <- data.frame(
+draw_hr <- data.frame(
   sample = paste0("C", clinical$No.),
   time = clinical$`Survival time（Month）`,
   state = clinical$`Status（1=Dead, 0=Alive）`
 ) %>%
   filter(sample %in% colnames(mtx_cpm))
 
-# draw_hr2 contains the log2CPM values of species
-draw_hr2 <- as.data.frame(t(log2(mtx_cpm[rownames(abund_sp_top), draw_hr1$sample] + 1)))
-colnames(draw_hr2) <- abund_sp_top$Species
-draw_hr2$sample <- rownames(draw_hr2) # Used for merge only
-
-draw_hr <- merge(draw_hr1, draw_hr2, by = "sample")
+draw_hr <- cbind(
+  draw_hr,
+  setNames(
+    as.data.frame(t(log2(mtx_cpm[rownames(abund_sp_top), draw_hr$sample, drop = FALSE] + 1))),
+    abund_sp_top$Species
+  )
+)
 
 # Calculating HR
 source(file.path(DIR_TOOL, "hr_calc.R"))
@@ -99,23 +102,22 @@ abund_sp_top <- na.omit(abund_sp_top)
 
 # Number of identified species within each abundant genus
 len_each_g <- vapply(names(g_abund),
-                   function(g) length(grep(g, abund_sp_top$Species, fixed = TRUE)),
-                   integer(1))
+                     function(g) length(grep(g, abund_sp_top$Species, fixed = TRUE)),
+                     integer(1))
 
 # Allocate genus tag and circular x-coordinate for each species
 abund_sp_top$Genus <- rep(names(g_abund), times = len_each_g)
 abund_sp_top$X     <- unlist(lapply(len_each_g,
-                                  function(n) seq(0, 1, length.out = n)))
+                                    function(n) seq(0, 1, length.out = n)))
 
 # Calculating differential
 source(file.path(DIR_TOOL, "wilcox_diff.R"))
-diff_sp <- wilcox_diff(mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abund_sp_top$Species, ],
-                      mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abund_sp_top$Species, grep("C", colnames(mtx_cpm))],
-                      mtx_cpm[gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% 
-                                abund_sp_top$Species, grep("N", colnames(mtx_cpm))],
-                      T, 0.05, log2(1.5))
+species_mask <- gsub("[[:punct:]]", "_", rownames(mtx_cpm)) %in% abund_sp_top$Species
+species_cpm <- mtx_cpm[species_mask, , drop = FALSE]
+diff_sp <- wilcox_diff(species_cpm,
+                       species_cpm[, grep("^C", colnames(species_cpm)), drop = FALSE],
+                       species_cpm[, grep("^N", colnames(species_cpm)), drop = FALSE],
+                       T, 0.05, log2(1.5))
 colnames(diff_sp)[1] <- "Species"
 diff_sp <- diff_sp[order(diff_sp$Species, decreasing = T), ]
 
@@ -128,11 +130,11 @@ abund_sp_top$Diff.Log2FC <- diff_sp$log2FC
 #abund_sp_top <- readRDS(file.path(DIR_RDS, "sAEG_CirclizeData_AbundSpTop_Genera20.rds"))
 
 col_genera <- paste0(substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
-                                                                    23:27, 2, 4, 5, 7, 9)], 
-                           1, 7), "80") # Colours for genera. "80" reprensents alpha
+                                                                     23:27, 2, 4, 5, 7, 9)], 
+                            1, 7), "80") # Colours for genera. "80" reprensents alpha
 col_sp <- substr(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
-                                                         23:27, 2, 4, 5, 7, 9)], 
-                1, 7)
+                                                          23:27, 2, 4, 5, 7, 9)], 
+                 1, 7)
 
 # Map a numeric metric onto a divergent colour gradient.
 # Values above `hi` use the upper palette, below `lo` the lower one,
@@ -164,10 +166,9 @@ colour_hr <- gradient_colours(
 
 # Differential log2 fold change colours; re-keyed by Species for the loop below
 colour_log2fc <- gradient_colours(
-  setNames(abund_sp_top$Diff.Log2FC, rownames(abund_sp_top)),
+  setNames(abund_sp_top$Diff.Log2FC, abund_sp_top$Species),
   hi = log2(1.5), lo = -log2(1.5), col_hi = "#9A342C", col_lo = "#2C6199"
 )
-colour_log2fc <- colour_log2fc[abund_sp_top$Species]
 
 # Drawing the most abundant genera section
 # Allocating the canvas and sectors
@@ -186,10 +187,10 @@ for (i in seq_along(g_abund)) {
   # Get species indices for current genus and sort by abundance
   sp_indices <- which(abund_sp_top$Genus == sectors[i])
   sp_order <- sp_indices[order(abund_sp_top$Abundance[sp_indices], decreasing = TRUE)]
-
+  
   # Calculate uniform width for each species within this genus
   bar_width <- 1 / len_each_g[i] / 2  # Half width of each position
-
+  
   for (j in seq_len(len_each_g[i])) {
     sp_idx <- sp_order[j]
     
@@ -262,7 +263,7 @@ dev.off()
 # The only thing needed is the legend, so the main body of the plot can be ignored
 pdf(file.path(DIR_RES, "ScaleSurv_Legend.pdf"), width = 6, height = 5)
 ggplot(data = abund_sp_top, aes(colour = Surv.HR, 
-                              x = Species, y = X)) +
+                                x = Species, y = X)) +
   geom_point() + 
   scale_color_gradient2(aes(labs = c(min(Surv.HR), 1, max(Surv.HR))),
                         midpoint = 1,  
@@ -273,7 +274,7 @@ dev.off()
 
 pdf(file.path(DIR_RES, "ScaleDiff_Legend.pdf"), width = 6, height = 5)
 ggplot(data = abund_sp_top, aes(colour = Diff.Log2FC, 
-                              x = Species, y = X)) +
+                                x = Species, y = X)) +
   geom_point() + 
   scale_color_gradient2(aes(labs = c(min(Diff.Log2FC), 0, max(Diff.Log2FC))),
                         midpoint = 0,  
@@ -297,16 +298,15 @@ cor.test(shan_tumour, dist_tumour) # NS
 
 summary(dist_tumour)
 
-dist_groups <- data.frame(
+pdf(file.path(DIR_RES, "Test_alpha_distance.pdf"), width = 4, height = 3.2)
+ggboxplot(data.frame(
   sample = overlap_samples,
   distance = dist_tumour,
   shannon = shan_tumour
 ) %>%
-  mutate(dist_group = if_else(distance > median(distance), "Close", "Far"))
-
-pdf(file.path(DIR_RES, "Test_alpha_distance.pdf"), width = 4, height = 3.2)
-ggboxplot(dist_groups, x = "dist_group", y = "shannon",
-          col = "dist_group", palette = "jco", add = "jitter") +
+  mutate(dist_group = if_else(distance > median(distance), "Close", "Far")),
+x = "dist_group", y = "shannon",
+col = "dist_group", palette = "jco", add = "jitter") +
   stat_compare_means() + 
   xlab("Distance from tumour centre to junction") +
   ylab("Shannon index") +
@@ -320,15 +320,15 @@ siewart_tumour <- clinical$`Siewert type`
 names(siewart_tumour) <- paste0("C", clinical$No.)
 siewart_tumour <- siewart_tumour[overlap_samples]
 
-siewart_groups <- data.frame(
+pdf(file.path(DIR_RES, "Test_alpha_siewart.pdf"), width = 4, height = 3.2)
+ggboxplot(data.frame(
   sample = overlap_samples,
   siewart = siewart_tumour,
   shannon = shan_tumour
 ) %>%
-  mutate(siewart = factor(siewart, levels = c("I", "II", "III")))
-pdf(file.path(DIR_RES, "Test_alpha_siewart.pdf"), width = 4, height = 3.2)
-ggboxplot(siewart_groups, x = "siewart", y = "shannon",
-          col = "siewart", palette = "jco", add = "jitter") +
+  mutate(siewart = factor(siewart, levels = c("I", "II", "III"))),
+x = "siewart", y = "shannon",
+col = "siewart", palette = "jco", add = "jitter") +
   stat_compare_means(comparisons = list(c("I", "II"),
                                         c("II", "III"),
                                         c("I", "III"))) + 
@@ -397,7 +397,7 @@ hr_clinic <- hr_calc(c("shannon", "Age", "Smoking", "Alcohol",
 
 pdf(file.path(DIR_RES, "B_hr_alphadiv_clinic.pdf"), width = 4.5, height = 4)
 ggplot(hr_clinic, aes(x = HR, y = index,
-                     color = Risk)) +
+                      color = Risk)) +
   geom_point(shape = 15, size = 5) +
   scale_color_manual(values = c("Decrease" = "#126CAA", 
                                 "NS" = "grey", 
@@ -459,22 +459,18 @@ edge <- net_dt$net.cor.matrix$edge %>%
   filter(OTU_1 %in% node$ID & OTU_2 %in% node$ID)
 
 # Replace blank ranks with "unclassified"
-rank_cols <- paste0("Rank", 1:7)
-for (col in rank_cols) {
+for (col in paste0("Rank", 1:7)) {
   node[[col]] <- ifelse(grepl("^[a-z]__$", node[[col]]), 
                         paste0(sub("__$", "", node[[col]]), "__unclassified"), 
                         node[[col]])
 }
 
-# Other plots
-plots <- tab[[1]]
-
 pdf(file.path(DIR_RES, "Net_connectivity_tn.pdf"), width = 6, height = 5)
-plots[[2]]
+tab[[1]][[2]]
 dev.off()
 
 pdf(file.path(DIR_RES, "Net_randomness_tn.pdf"), width = 6, height =5)
-plots[[3]] +
+tab[[1]][[3]] +
   scale_colour_manual(values = c("#0073C2FF", "#EFC000FF")) +
   scale_fill_manual(values = c("#0073C2FF", "#EFC000FF")) +
   labs(x = NULL,
@@ -720,20 +716,19 @@ saving_info <- saving_info %>%
   arrange(!is.na(rank_total), rank_total)
 
 # Compute within-group ranks for long_ranks
-saving_info_candidate <- saving_info %>%
-  filter(is_candidate) %>%
-  mutate(across(c(rank_abundance, degree_stability, degree_rank,
-                  closeness_stability, closeness_rank, diversity_contribute),
-                ~ rank(.x), .names = "{.col}_grprank"))
-
-saving_info_noncandidate <- saving_info %>%
-  filter(!is_candidate) %>%
-  mutate(across(c(rank_abundance, degree_stability, degree_rank,
-                  closeness_stability, closeness_rank),
-                ~ rank(.x), .names = "{.col}_grprank"),
-         diversity_contribute_grprank = NA_real_)
-
-saving_info_ranked <- bind_rows(saving_info_candidate, saving_info_noncandidate)
+saving_info_ranked <- bind_rows(
+  saving_info %>%
+    filter(is_candidate) %>%
+    mutate(across(c(rank_abundance, degree_stability, degree_rank,
+                    closeness_stability, closeness_rank, diversity_contribute),
+                  ~ rank(.x), .names = "{.col}_grprank")),
+  saving_info %>%
+    filter(!is_candidate) %>%
+    mutate(across(c(rank_abundance, degree_stability, degree_rank,
+                    closeness_stability, closeness_rank),
+                  ~ rank(.x), .names = "{.col}_grprank"),
+           diversity_contribute_grprank = NA_real_)
+)
 
 vars <- c("rank_abundance", "degree_stability", "degree_rank",
           "closeness_stability", "closeness_rank", "diversity_contribute")
@@ -753,22 +748,21 @@ long_total_plot <- bind_rows(
       rank(-value[group == "candidate"], na.last = FALSE)[match(value, value[group == "candidate"])],
       rank(-value[group == "non-candidate"], na.last = FALSE)[match(value, value[group == "non-candidate"])]
     )
-)
+  )
 
 # Define global species order
-candidate_levels <- long_total_plot %>%
-  filter(group == "candidate") %>%
-  arrange(bar_height) %>%
-  pull(Species) %>%
-  as.character()
-
-non_candidate_levels <- long_total_plot %>%
-  filter(group == "non-candidate") %>%
-  arrange(desc(bar_height)) %>%
-  pull(Species) %>%
-  as.character()
-
-species_levels <- c(non_candidate_levels, candidate_levels)
+species_levels <- c(
+  long_total_plot %>%
+    filter(group == "non-candidate") %>%
+    arrange(desc(bar_height)) %>%
+    pull(Species) %>%
+    as.character(),
+  long_total_plot %>%
+    filter(group == "candidate") %>%
+    arrange(bar_height) %>%
+    pull(Species) %>%
+    as.character()
+)
 
 long_total_plot <- long_total_plot %>%
   mutate(Species = factor(Species, levels = species_levels))
@@ -825,15 +819,6 @@ species_list <- long_total_plot[long_total_plot$group == "candidate", "Species"]
   droplevels(.) %>%
   as.character()
 
-# Network plot highlighting the candidate species (uses node/edge from the
-# earlier network.pip() output; placed here so species_list is already defined)
-node_highlight <- node %>%
-  mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
-                                gsub("s__", "", Rank7)),
-         short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
-                             ".", gsub("s__", "", Rank7))) %>%
-  filter(standard_name %in% species_list)
-
 pdf(file.path(DIR_RES, "Net_all_candidates.pdf"), width = 12, height = 5)
 ggplot() +
   geom_segment(data = edge, alpha = 0.3,
@@ -844,7 +829,15 @@ ggplot() +
              aes(X1, X2, fill = Rank2, size = igraph.degree)) +
   scale_fill_manual(values = paletteer_d("ggsci::nrc_npg")) +
   facet_wrap(.~ label, scales = "free_y", nrow = 1) +
-  geom_text(data = node_highlight, aes(X1, X2, label = short_name)) +
+  geom_text(
+    data = node %>%
+      mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
+                                    gsub("s__", "", Rank7)),
+             short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
+                                 ".", gsub("s__", "", Rank7))) %>%
+      filter(standard_name %in% species_list),
+    aes(X1, X2, label = short_name)
+  ) +
   scale_size(range = c(0.8, 5)) +
   scale_x_continuous(breaks = NULL) +
   scale_y_continuous(breaks = NULL) +
@@ -857,10 +850,8 @@ ggplot() +
         panel.grid.major = element_blank())
 dev.off()
 
+# Build correlation stats using samples shared by Shannon and species matrices
 shared_samples <- intersect(names(shan_tumour), colnames(mtx_cpm))
-
-# Build per-species dataframes and correlation stats
-df_list   <- list()
 cor_stats <- list()
 
 for (sp in species_list) {
@@ -869,8 +860,6 @@ for (sp in species_list) {
     abund   = as.numeric(abund),
     shannon = shan_tumour[shared_samples]
   )
-  df_list[[sp]] <- sub
-  
   if (sd(sub$abund, na.rm = TRUE) == 0) {
     cor_stats[[sp]] <- data.frame(species = sp, r = NA_real_, p = NA_real_)
   } else {
@@ -888,7 +877,10 @@ cor_stats_df$p.adj <- p.adjust(cor_stats_df$p, method = "BH")
 
 # Plot one figure per species
 for (sp in species_list) {
-  sub  <- df_list[[sp]]
+  sub <- data.frame(
+    abund = as.numeric(mtx_cpm[sp, shared_samples] / 1e+4),
+    shannon = shan_tumour[shared_samples]
+  )
   stat <- cor_stats_df[cor_stats_df$species == sp, ]
   
   if (!is.na(stat$r)) {
@@ -954,8 +946,7 @@ permanova_group <- adonis2(
 )
 
 # PERMDISP: dispersion homogeneity
-bd <- betadisper(bc_dist, meta_all$group)
-permdisp_res <- permutest(bd, permutations = 999)
+permdisp_res <- permutest(betadisper(bc_dist, meta_all$group), permutations = 999)
 saveRDS(permdisp_res, file.path(DIR_RDS, "PERMDISP_group.rds"))
 
 # PERMANOVA on tumour-only samples for clinical drivers
@@ -981,7 +972,7 @@ meta_t_complete <- meta_t %>%
 keep_idx <- match(meta_t_complete$sample, meta_t$sample)
 bc_dist_t_sub <- as.dist(as.matrix(bc_dist_t)[keep_idx, keep_idx])
 
-permanova_clin <- adonis2(
+adonis2(
   bc_dist_t_sub ~ Age + Stage_num + Diff_num + Siewert + Distance,
   data = meta_t_complete,
   permutations = 999,
@@ -1000,9 +991,10 @@ eig_pct <- round(pcoa$eig[1:2] / sum(pcoa$eig[pcoa$eig > 0]) * 100, 1)
 
 # Nestedness vs turnover decomposition (Baselga framework) within tumour samples
 mtx_pa <- (mtx_rel > 0) * 1
-beta_comp <- beta.multi(t(mtx_pa[, meta_all$sample[meta_all$group == "Tumour"]]),
-                        index.family = "sorensen") # Not nested
-cat(beta_comp)
+beta.multi(
+  t(mtx_pa[, meta_all$sample[meta_all$group == "Tumour"]]),
+  index.family = "sorensen"
+) # Not nested
 
 # Pairwise nestedness for paired patients
 paired_ids <- intersect(
@@ -1139,7 +1131,6 @@ dev.off()
 
 paired_samples <- c(paste0("C", paired_ids), paste0("N", paired_ids))
 
-count_paired <- mtx_count[, paired_samples]
 meta_paired <- data.frame(
   sample = paired_samples,
   patient = gsub("^[CN]", "", paired_samples),
@@ -1156,7 +1147,7 @@ dir.create(maaslin_dir, showWarnings = FALSE, recursive = TRUE)
 
 set.seed(42)
 maaslin_res <- Maaslin2(
-  input_data = as.data.frame(count_paired),
+  input_data = as.data.frame(mtx_count[, paired_samples, drop = FALSE]),
   input_metadata = meta_paired,
   output = maaslin_dir,
   fixed_effects = "group",
@@ -1192,40 +1183,39 @@ maaslin_tab <- maaslin_res$results %>%
 
 n_each <- 10
 
-top_up <- maaslin_tab %>%
-  filter(diff, direction == "Up_in_Tumour") %>%
-  arrange(desc(lfc)) %>%
-  slice_head(n = n_each)
-
-top_down <- maaslin_tab %>%
-  filter(diff, direction == "Down_in_Tumour") %>%
-  arrange(lfc) %>%
-  slice_head(n = n_each)
-
 # Combine: up first (largest at top), then down (most negative at bottom)
-top_da <- bind_rows(top_up, top_down) %>%
+top_da <- bind_rows(
+  maaslin_tab %>%
+    filter(diff, direction == "Up_in_Tumour") %>%
+    arrange(desc(lfc)) %>%
+    slice_head(n = n_each),
+  maaslin_tab %>%
+    filter(diff, direction == "Down_in_Tumour") %>%
+    arrange(lfc) %>%
+    slice_head(n = n_each)
+) %>%
   mutate(
     taxon_short = gsub("^s__", "", taxon),
     taxon_short = factor(taxon_short, levels = rev(taxon_short))
   )
 
-p_top_da <- ggplot(top_da, aes(lfc, taxon_short, fill = direction)) +
-  geom_col(width = 0.7) +
-  geom_errorbarh(aes(xmin = lfc - se, xmax = lfc + se),
-                 width = 0.25, colour = "grey30") +
-  geom_vline(xintercept = 0, colour = "black") +
-  scale_fill_manual(values = c(Up_in_Tumour = "#9A342C",
-                               Down_in_Tumour = "#126CAA")) +
-  labs(x = "MaAsLin2 coefficient (mean +/- SE)",
-       y = NULL, fill = NULL) +
-  theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1, size = 8),
-        legend.position = "top")
-
 pdf(file.path(DIR_RES, "DA_top10each_barplot_split.pdf"),
     width = 6, height = 4)
-print(p_top_da)
+print(
+  ggplot(top_da, aes(lfc, taxon_short, fill = direction)) +
+    geom_col(width = 0.7) +
+    geom_errorbarh(aes(xmin = lfc - se, xmax = lfc + se),
+                   width = 0.25, colour = "grey30") +
+    geom_vline(xintercept = 0, colour = "black") +
+    scale_fill_manual(values = c(Up_in_Tumour = "#9A342C",
+                                 Down_in_Tumour = "#126CAA")) +
+    labs(x = "MaAsLin2 coefficient (mean +/- SE)",
+         y = NULL, fill = NULL) +
+    theme_test() +
+    theme(panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1, size = 8),
+          legend.position = "top")
+)
 dev.off()
 
 volc_df <- maaslin_tab %>%
@@ -1244,25 +1234,25 @@ volc_df <- volc_df %>%
                         gsub("^s__", "", taxon),
                         NA_character_))
 
-p_volc <- ggplot(volc_df, aes(lfc, neg_log10_q, colour = direction)) +
-  geom_point(alpha = 0.75, size = 1.6) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey50") +
-  geom_vline(xintercept = c(-log2(1.5), log2(1.5)),
-             linetype = "dashed", colour = "grey50") +
-  ggrepel::geom_text_repel(aes(label = label), size = 2.6,
-                           max.overlaps = 20, segment.size = 0.2,
-                           show.legend = FALSE) +
-  scale_colour_manual(values = c(Up_in_Tumour = "#9A342C",
-                                 Down_in_Tumour = "#126CAA",
-                                 NS = "grey80")) +
-  labs(x = "MaAsLin2 coefficient (Tumour vs Normal)",
-       y = "-log10(q)",
-       colour = NULL) +
-  theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1),
-        legend.position = "right")
-
 pdf(file.path(DIR_RES, "DA_volcano.pdf"), width = 4.8, height = 3.5)
-print(p_volc)
+print(
+  ggplot(volc_df, aes(lfc, neg_log10_q, colour = direction)) +
+    geom_point(alpha = 0.75, size = 1.6) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey50") +
+    geom_vline(xintercept = c(-log2(1.5), log2(1.5)),
+               linetype = "dashed", colour = "grey50") +
+    ggrepel::geom_text_repel(aes(label = label), size = 2.6,
+                             max.overlaps = 20, segment.size = 0.2,
+                             show.legend = FALSE) +
+    scale_colour_manual(values = c(Up_in_Tumour = "#9A342C",
+                                   Down_in_Tumour = "#126CAA",
+                                   NS = "grey80")) +
+    labs(x = "MaAsLin2 coefficient (Tumour vs Normal)",
+         y = "-log10(q)",
+         colour = NULL) +
+    theme_test() +
+    theme(panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1),
+          legend.position = "right")
+)
 dev.off()
