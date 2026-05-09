@@ -1227,3 +1227,42 @@ pdf(file.path(DIR_RES, "DA_top10each_barplot_split.pdf"),
     width = 6, height = 4)
 print(p_top_da)
 dev.off()
+
+volc_df <- maaslin_tab %>%
+  mutate(neg_log10_q = -log10(q + 1e-300)) %>%
+  arrange(lfc)
+
+top_labels <- volc_df %>%
+  filter(diff, direction %in% c("Up_in_Tumour", "Down_in_Tumour")) %>%
+  group_by(direction) %>%
+  slice_max(abs(lfc), n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  pull(taxon)
+
+volc_df <- volc_df %>%
+  mutate(label = ifelse(taxon %in% top_labels,
+                        gsub("^s__", "", taxon),
+                        NA_character_))
+
+p_volc <- ggplot(volc_df, aes(lfc, neg_log10_q, colour = direction)) +
+  geom_point(alpha = 0.75, size = 1.6) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = c(-log2(1.5), log2(1.5)),
+             linetype = "dashed", colour = "grey50") +
+  ggrepel::geom_text_repel(aes(label = label), size = 2.6,
+                           max.overlaps = 20, segment.size = 0.2,
+                           show.legend = FALSE) +
+  scale_colour_manual(values = c(Up_in_Tumour = "#9A342C",
+                                 Down_in_Tumour = "#126CAA",
+                                 NS = "grey80")) +
+  labs(x = "MaAsLin2 coefficient (Tumour vs Normal)",
+       y = "-log10(q)",
+       colour = NULL) +
+  theme_test() +
+  theme(panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1),
+        legend.position = "right")
+
+pdf(file.path(DIR_RES, "DA_volcano.pdf"), width = 4.8, height = 3.5)
+print(p_volc)
+dev.off()
