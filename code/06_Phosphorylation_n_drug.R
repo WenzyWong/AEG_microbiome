@@ -1023,7 +1023,7 @@ dev.off()
 
 # Correlation between abundance and care-predicted responses
 cor_ef_care <- corr.test(t(as.matrix(care_pred_matrix[ , comman_sample_ef])), 
-                         t(as.matrix(abund_mtx["Enterococcus_faecalis", comman_sample_ef)),
+                         t(as.matrix(abund_mtx["Enterococcus_faecalis", comman_sample_ef])),
                          method = "spearman")
 cor_ef_care_r <- cor_ef_care$r
 cor_ef_care_p <- cor_ef_care$p.adj
