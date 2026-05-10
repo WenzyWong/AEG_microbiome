@@ -891,7 +891,7 @@ build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
   
   HeatmapAnnotation(
     log2CPM = mean_abund,
-    col = list(log2CPM = colorRamp2(rng, c("white", "darkgreen"))),
+    col = list(log2CPM = circlize::colorRamp2(rng, c("white", "darkgreen"))),
     show_legend = show_legend,
     show_annotation_name = show_legend
   )
@@ -976,8 +976,9 @@ dev.off()
 
 ####
 # EF
-cor_ef_idwas <- corr.test(t(as.matrix(idwas_mtx)), 
-                          t(as.matrix(abund_mtx["Enterococcus_faecalis", ])),
+comman_sample_ef <- intersect(colnames(idwas_mtx), colnames(abund_mtx))
+cor_ef_idwas <- corr.test(t(as.matrix(idwas_mtx[, comman_sample_ef])), 
+                          t(as.matrix(abund_mtx["Enterococcus_faecalis", comman_sample_ef])),
                           method = "spearman")
 cor_ef_idwas_r <- cor_ef_idwas$r
 cor_ef_idwas_p <- cor_ef_idwas$p.adj
@@ -1021,8 +1022,8 @@ ggplot(cor_ef_idwas_res, aes(x = rs, y = -log10(padj), colour = sig)) +
 dev.off()
 
 # Correlation between abundance and care-predicted responses
-cor_ef_care <- corr.test(t(as.matrix(care_pred_matrix)), 
-                         t(as.matrix(abund_mtx["Enterococcus_faecalis", colnames(care_pred_matrix)])),
+cor_ef_care <- corr.test(t(as.matrix(care_pred_matrix[ , comman_sample_ef])), 
+                         t(as.matrix(abund_mtx["Enterococcus_faecalis", comman_sample_ef)),
                          method = "spearman")
 cor_ef_care_r <- cor_ef_care$r
 cor_ef_care_p <- cor_ef_care$p.adj
