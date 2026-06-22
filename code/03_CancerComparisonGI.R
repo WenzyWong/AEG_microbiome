@@ -165,9 +165,9 @@ abund_escc <- sort(apply(cpm_escc, MARGIN = 1, FUN = mean) / 1e+4, decreasing = 
 abund_aeg <- sort(apply(cpm_aeg, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
 abund_stad <- sort(apply(cpm_stad, MARGIN = 1, FUN = mean) / 1e+4, decreasing = T)
 
-per_escc <- c(abund_escc[1:10], "Others" = 100 - sum(abund_escc[1:10]))
-per_aeg <- c(abund_aeg[1:10], "Other" = 100 - sum(abund_aeg[1:10]))
-per_stad <- c(abund_stad[1:10], "Other" = 100 - sum(abund_stad[1:10]))
+per_escc <- c(abund_escc[1:20], "Others" = 100 - sum(abund_escc[1:20]))
+per_aeg <- c(abund_aeg[1:20], "Other" = 100 - sum(abund_aeg[1:20]))
+per_stad <- c(abund_stad[1:20], "Other" = 100 - sum(abund_stad[1:20]))
 
 per_escc <- data.frame(Genus = names(per_escc), Abundance = per_escc)
 per_aeg <- data.frame(Genus = names(per_aeg), Abundance = per_aeg)
@@ -179,98 +179,104 @@ abund_venn <- list(
   STAD = per_stad$Genus
 )
 
-pdf(file.path(DIR_RES, "D_venn_top10.pdf"), width = 3, height = 3)
+pdf(file.path(DIR_RES, "D_venn_top20.pdf"), width = 3, height = 3)
 ggvenn::ggvenn(abund_venn, c("ESCC", "AEG", "STAD"),
                show_percentage = F,
                fill_color = c("#60AB9EFF", "#485682FF", "#5C8447FF"))
 dev.off()
 
-col_escc <- c("Cutibacterium" = "#4269A099", 
-              "Pseudomonas"= "#F89D59", 
-              "Prevotella" = "#60AB9E88", 
-              "Streptomyces" = "#FEEDAA",
-              "Bacillus" = "#ADE0DC",
-              "Escherichia" = "#F8CD5A",
-              "Agrococcus" = "#8CBC6888", 
-              "Staphylococcus" = "#9CCEE3", 
-              "Stenotrophomonas" = "#EA9696",
-              "Streptococcus" = "#9A342C",
-              "Others" = "#DCDCDC")
+# Palette shared with the AEG overall distribution (abund_aeg_distribution)
+colAbund <- c(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 23:27, 2, 4, 5, 7, 9)],
+              "grey")
 
-col_aeg <- c("Staphylococcus" = "#64A4CC", 
-             "Pasteurella" = "#9CCEE3", 
-             "Bacillus" = "#ADE0DC", 
-             "Klebsiella" = "#CAEAD2", 
-             "Priestia" = "#D3F2D6", 
-             "Providencia" = "#ECF6C8", 
-             "Streptomyces" = "#FEEDAA", 
-             "Sphingomonas" = "#FDC980", 
-             "Pseudomonas" = "#F89D59", 
-             "Burkholderia" = "#E75B3A", 
-             "Other" = "#DCDCDC")
+# AEG top 20: colours consistent with abund_aeg_distribution (by abundance rank)
+aeg_top20 <- per_aeg$Genus[1:20]
+col_aeg <- setNames(colAbund[1:20], aeg_top20)
+col_aeg["Other"] <- "#DCDCDC"
 
-col_stad <- c("Pasteurella" = "#9CCEE3", 
-              "Staphylococcus" = "#64A4CC", 
-              "Bacillus" = "#ADE0DC", 
-              "Klebsiella" = "#CAEAD2", 
-              "Priestia" = "#D3F2D6",
-              "Vibrio" = "#A6D384", 
-              "Escherichia" = "#F8CD5A", 
-              "Streptomyces" = "#FEEDAA", 
-              "Stenotrophomonas" = "#EA9696", 
-              "Streptococcus" = "#9A342C",
-              "Other" = "#DCDCDC")
+# ESCC/STAD: genera shared with AEG top20 reuse AEG colours; the rest get
+# Oranges/Greens (higher abundance -> darker, avoiding the lightest shades).
+build_col <- function(per_df, brewer_name) {
+  g <- per_df$Genus
+  g <- g[!(g %in% c("Other", "Others"))]
+  shared <- g[g %in% aeg_top20]
+  novel <- g[!(g %in% aeg_top20)]
+  cols <- character(0)
+  cols[shared] <- col_aeg[shared]
+  if (length(novel) > 0) {
+    cols[novel] <- colorRampPalette(rev(brewer.pal(9, brewer_name)[2:9]))(length(novel))
+  }
+  cols["Other"] <- "#DCDCDC"
+  cols["Others"] <- "#DCDCDC"
+  cols
+}
 
-pdf(file.path(DIR_RES, "D_abundance_top10_escc.pdf"), width = 3, height = 7)
-ggplot(per_escc) +
-  geom_bar(aes(x = 1, y = Abundance, 
-               fill = factor(Genus, levels = unique(Genus))), 
-           stat = "identity", position = "stack") +
-  scale_fill_manual(values = col_escc,
-                    name = "Genus") +
-  xlab("ESCC") +
-  ylab("Relative abundance (%)") +
-  theme_minimal() +
-  theme(axis.text.x = element_blank(), 
-        axis.text.y = element_text(colour = 1),
-        panel.grid.minor = element_blank(),
-        panel.grid.major = element_blank(),
-        panel.spacing.x = element_blank())
+col_escc <- build_col(per_escc, "Oranges")
+col_stad <- build_col(per_stad, "Greens")
+
+######################################
+# Combined top20 abundance (shared legend)
+aeg_top20  <- per_aeg$Genus[1:20]
+escc_g     <- setdiff(per_escc$Genus, c("Other", "Others"))
+stad_g     <- setdiff(per_stad$Genus, c("Other", "Others"))
+escc_novel <- setdiff(escc_g, aeg_top20)
+stad_novel <- setdiff(stad_g, aeg_top20)
+cross_g    <- intersect(escc_novel, stad_novel)   # non-AEG, in both ESCC & STAD
+escc_only  <- setdiff(escc_novel, cross_g)
+stad_only  <- setdiff(stad_novel, cross_g)
+
+col_escc_only <- setNames(colorRampPalette(rev(brewer.pal(9, "Blues")[2:9]))(length(escc_only)), escc_only)
+col_aeg_all   <- setNames(colAbund[1:20], aeg_top20)
+col_stad_only <- setNames(colorRampPalette(rev(brewer.pal(9, "Purples")[2:9]))(length(stad_only)), stad_only)
+col_cross     <- setNames(colorRampPalette(brewer.pal(9, "Greys")[5:8])(length(cross_g)), cross_g)
+
+genus_levels <- c(escc_only, aeg_top20, stad_only, cross_g, "Other")
+col_combined <- c(col_escc_only, col_aeg_all, col_stad_only, col_cross, "Other" = "#DCDCDC")
+col_combined <- col_combined[genus_levels]
+
+abund_combined <- rbind(
+  data.frame(Cancer = "ESCC", per_escc),
+  data.frame(Cancer = "AEG",  per_aeg),
+  data.frame(Cancer = "STAD", per_stad)
+)
+rownames(abund_combined) <- NULL
+abund_combined$Genus[abund_combined$Genus %in% c("Other", "Others")] <- "Other"
+abund_combined$Cancer <- factor(abund_combined$Cancer, levels = c("ESCC", "AEG", "STAD"))
+
+# Stack each bar by its OWN abundance (highest at top), Other forced to the bottom.
+# Compute explicit y limits so the stacking order is decoupled from the grouped
+# legend order (legend keeps: ESCC-only / AEG / STAD-only / cross / Other).
+abund_combined <- abund_combined %>%
+  mutate(ord_key = ifelse(Genus == "Other", -1, Abundance)) %>%
+  arrange(Cancer, desc(ord_key)) %>%
+  group_by(Cancer) %>%
+  mutate(ymax = sum(Abundance) - cumsum(Abundance) + Abundance,
+         ymin = sum(Abundance) - cumsum(Abundance)) %>%
+  ungroup()
+abund_combined$xc <- as.integer(abund_combined$Cancer)
+
+pdf(file.path(DIR_RES, "D_abundance_top20_combined.pdf"), width = 6.5, height = 8)
+print(
+  ggplot(abund_combined) +
+    geom_rect(aes(xmin = xc - 0.45, xmax = xc + 0.45,
+                  ymin = ymin, ymax = ymax,
+                  fill = factor(Genus, levels = genus_levels)),
+             colour = NA) +
+    scale_fill_manual(values = col_combined, name = "Genus") +
+    scale_x_continuous(breaks = 1:3, labels = c("ESCC", "AEG", "STAD")) +
+    xlab("") +
+    ylab("Relative abundance (%)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(colour = 1),
+          axis.text.y = element_text(colour = 1),
+          panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.spacing.x = element_blank(),
+          legend.key.size = unit(0.35, "cm"),
+          legend.text = element_text(size = 7))
+)
 dev.off()
 
-pdf(file.path(DIR_RES, "D_abundance_top10_aeg.pdf"), width = 3, height = 7)
-ggplot(per_aeg) +
-  geom_bar(aes(x = 1, y = Abundance, 
-               fill = factor(Genus, levels = unique(Genus))), 
-           stat = "identity", position = "stack") +
-  scale_fill_manual(values = col_aeg,
-                    name = "Genus") +
-  xlab("AEG") +
-  ylab("Relative abundance (%)") +
-  theme_minimal() +
-  theme(axis.text.x = element_blank(), 
-        axis.text.y = element_text(colour = 1),
-        panel.grid.minor = element_blank(),
-        panel.grid.major = element_blank(),
-        panel.spacing.x = element_blank())
-dev.off()
-
-pdf(file.path(DIR_RES, "D_abundance_top10_stad.pdf"), width = 3, height = 7)
-ggplot(per_stad) +
-  geom_bar(aes(x = 1, y = Abundance, 
-               fill = factor(Genus, levels = unique(Genus))), 
-           stat = "identity", position = "stack") +
-  scale_fill_manual(values = col_stad,
-                    name = "Genus") +
-  xlab("STAD") +
-  ylab("Relative abundance (%)") +
-  theme_minimal() +
-  theme(axis.text.x = element_blank(), 
-        axis.text.y = element_text(colour = 1),
-        panel.grid.minor = element_blank(),
-        panel.grid.major = element_blank(),
-        panel.spacing.x = element_blank())
-dev.off()
 
 ######################################
 # Compare overlapped genera separately
@@ -290,7 +296,7 @@ abund_box_comp$Cancer <- c(
 )
 abund_box_comp$`log2 RA` <- log2(abund_box_comp$`Relative Abundance` / 1e4 + 1)
 pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"), width = 6, height = 4)
-ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
+p_box_genus <- ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
           col = "Cancer", palette = "jco", add = "jitter",
           facet.by = "Genus") +
   stat_compare_means(comparisons = list(c("ESCC", "AEG"),
@@ -313,10 +319,6 @@ abund_aeg_distribution <- rbind(abund_aeg_distribution,
 abund_aeg_distribution <- abund_aeg_distribution[, order(unlist(abund_aeg_distribution[1,]),
                                                          decreasing = T)]
 abund_aeg_distribution$Genus <- rownames(abund_aeg_distribution)
-
-colAbund <- c(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 
-                                                       23:27, 2, 4, 5, 7, 9)],
-              "grey")
 
 long_distribution <- as.data.frame(reshape2::melt(abund_aeg_distribution, id.vars = c("Genus")))
 
