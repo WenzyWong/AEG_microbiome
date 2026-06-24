@@ -675,156 +675,115 @@ coef_elnet <- coef_elnet %>%
     NA_real_
   ))
 
+# Lollipop: species contribution to Shannon diversity, coloured by normal module
+contrib_df <- coef_elnet %>%
+  left_join(saving_module %>% distinct(Species, normal_module),
+            by = c("species" = "Species")) %>%
+  mutate(coef = lambda.min)
+mod_cols <- c("Normalmodel_1" = "#4393C3", "Normalmodel_4" = "#5AAE61")
+
+lollipop_contribution <- function(df, fname, height) {
+  df <- df %>% mutate(species = factor(species, levels = species[order(coef)]))
+  p <- ggplot(df, aes(x = coef, y = species, colour = normal_module)) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_segment(aes(x = 0, xend = coef, yend = species), linewidth = 0.6) +
+    scale_colour_manual(values = mod_cols, name = "Normal module") +
+    labs(x = "Elastic net coefficient (contribution to Shannon diversity)", y = NULL) +
+    theme_bw(base_size = 9) +
+    theme(panel.grid.major.y = element_blank(), legend.position = "top")
+  if (any(df[["coef"]] == 0)) {
+    p <- p + geom_point(aes(shape = coef == 0), size = 2.6) +
+      scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 1),
+                         labels = c("selected", "shrunk to 0"), name = NULL)
+  } else {
+    p <- p + geom_point(size = 2.6)
+  }
+  ggsave(file.path(DIR_RES, fname), p, width = 5.5, height = height)
+}
+
+# Main figure: positively contributing species
+lollipop_contribution(contrib_df %>% filter(coef > 0),
+                      "Elnet_shannon_contribution_positive.pdf", 3.2)
+# Supplementary figure: zero- and negative-contribution species
+lollipop_contribution(contrib_df %>% filter(coef <= 0),
+                      "Elnet_shannon_contribution_zero_negative.pdf", 4.5)
+
 # Rank all parameters
-saving_normal <- saving_module %>%
-  filter(Group == "Normal" & Species %in% coef_elnet$species) %>%
+library(patchwork)
+# Multi-attribute ranking of positively-contributing species
+# (degree/closeness/betweenness incl. normal-tumour stability; betweenness reversed: low = best)
+cand_sp <- coef_elnet[["species"]][!is.na(coef_elnet[["rank_contribute"]])]
+saving_normal <- saving_module %>% filter(Group == "Normal" & Species %in% cand_sp) %>%
   mutate(degree_rank = rank(-igraph.degree, ties.method = "min"),
-         rank_closseness = rank(-igraph.closeness, ties.method = "min"))
-
-saving_tumour <- saving_module %>%
-  filter(Group == "Tumour" & Species %in% coef_elnet$species) %>%
+         closeness_rank = rank(-igraph.closeness, ties.method = "min"),
+         betweenness_rank = rank(igraph.betweenness, ties.method = "min"))
+saving_tumour <- saving_module %>% filter(Group == "Tumour" & Species %in% cand_sp) %>%
   mutate(degree_rank = rank(-igraph.degree, ties.method = "min"),
-         rank_closseness = rank(-igraph.closeness, ties.method = "min"))
-
+         closeness_rank = rank(-igraph.closeness, ties.method = "min"),
+         betweenness_rank = rank(igraph.betweenness, ties.method = "min"))
 saving_info <- merge(
-  saving_normal[, c("OTU", "Species", "abundance",
-                    "degree_rank", "rank_closseness")],
-  saving_tumour[, c("OTU", "Species",
-                    "degree_rank", "rank_closseness")],
-  by = c("OTU", "Species"),
-  suffixes = c(".normal", ".tumour")
-) %>%
+  saving_normal[, c("OTU", "Species", "abundance", "degree_rank", "closeness_rank", "betweenness_rank")],
+  saving_tumour[, c("OTU", "Species", "degree_rank", "closeness_rank", "betweenness_rank")],
+  by = c("OTU", "Species"), suffixes = c(".normal", ".tumour")) %>%
   mutate(degree_stability = rank(abs(degree_rank.normal - degree_rank.tumour)),
          degree_rank = (rank(degree_rank.normal) + rank(degree_rank.tumour)) / 2,
-         closeness_stability = rank(abs(rank_closseness.normal - rank_closseness.tumour)),
-         closeness_rank = (rank(rank_closseness.normal) + rank(rank_closseness.tumour)) / 2)
+         closeness_stability = rank(abs(closeness_rank.normal - closeness_rank.tumour)),
+         closeness_rank = (rank(closeness_rank.normal) + rank(closeness_rank.tumour)) / 2,
+         betweenness_stability = rank(abs(betweenness_rank.normal - betweenness_rank.tumour)),
+         betweenness_rank = (rank(betweenness_rank.normal) + rank(betweenness_rank.tumour)) / 2,
+         diversity_contribute = coef_elnet[Species, "rank_contribute"],
+         rank_abundance = rank(-abundance)) %>%
+  mutate(rank_score = sqrt(degree_stability * degree_rank) +
+           sqrt(closeness_stability * closeness_rank) +
+           sqrt(betweenness_stability * betweenness_rank) +
+           diversity_contribute + rank_abundance) %>%
+  mutate(rank_total = rank(rank_score, ties.method = "min"))
 
-saving_info <- saving_info %>%
-  filter(Species %in% coef_elnet$species) %>%
-  mutate(
-    diversity_contribute = coef_elnet[Species, "rank_contribute"],
-    rank_abundance = rank(-abundance),
-    is_candidate = !is.na(diversity_contribute)
-  ) %>%
-  mutate(
-    rank_score = ifelse(
-      is_candidate,
-      sqrt(degree_stability * degree_rank) +
-        sqrt(closeness_stability * closeness_rank) +
-        diversity_contribute + rank_abundance,
-      NA_real_
-    ),
-    rank_total = ifelse(
-      is_candidate,
-      rank(rank_score[is_candidate])[match(rank_score, sort(rank_score[is_candidate], na.last = NA))],
-      NA_real_
-    )
-  ) %>%
-  arrange(!is.na(rank_total), rank_total)
+# Composite selection figure: lollipop | network bubbles | abundance | total-rank bar
+netvars <- c("degree_stability", "degree_rank", "closeness_stability",
+             "closeness_rank", "betweenness_stability", "betweenness_rank")
+si2 <- saving_info %>% mutate(across(all_of(c(netvars, "rank_abundance")), ~ rank(.x), .names = "{.col}_g"))
+sp_levels <- saving_info %>% arrange(desc(rank_total)) %>% pull(Species)
+short_map <- setNames(paste0(toupper(substr(sp_levels, 1, 1)), ".", sub("^[^_]*_", "", sp_levels)), sp_levels)
+mod_cols <- c("Normalmodel_1" = "#4393C3", "Normalmodel_4" = "#5AAE61")
+tl <- "#0C8599"; th <- "#79C9C4"
+loll <- saving_info %>% mutate(coef = coef_elnet[Species, "lambda.min"]) %>%
+  left_join(saving_module %>% distinct(Species, normal_module), by = "Species") %>%
+  mutate(Species = factor(Species, levels = sp_levels))
+netg <- paste0(netvars, "_g")
+bubN <- si2 %>% select(Species, all_of(netg)) %>%
+  pivot_longer(all_of(netg), names_to = "attr", values_to = "rank") %>%
+  mutate(attr = factor(attr, levels = netg), sz = max(rank) + 1 - rank, Species = factor(Species, levels = sp_levels))
+bubA <- si2 %>% transmute(Species = factor(Species, levels = sp_levels), rank = rank_abundance_g,
+                          sz = max(rank_abundance_g) + 1 - rank_abundance_g, attr = factor("Abundance"))
+dat <- saving_info %>% mutate(Species = factor(Species, levels = sp_levels), total_len = max(rank_total) + 1 - rank_total)
+netlabs <- c("Degree stab.", "Degree", "Closeness stab.", "Closeness", "Betweenness stab.", "Betweenness")
+pL <- ggplot(loll, aes(x = coef, y = Species, colour = normal_module)) +
+  geom_segment(aes(x = 0, xend = coef, yend = Species), linewidth = 0.6) + geom_point(size = 2.4) +
+  scale_colour_manual(values = mod_cols, name = "Normal module") + scale_x_reverse() + scale_y_discrete(labels = short_map) +
+  labs(x = "Elnet coef", y = NULL, title = "Diversity contribution") +
+  theme_bw(base_size = 8) + theme(panel.grid.major.y = element_blank(), legend.position = "bottom", plot.title = element_text(size = 8, hjust = 0.5))
+pN <- ggplot(bubN, aes(x = attr, y = Species)) + geom_point(aes(size = sz, colour = rank)) +
+  scale_colour_gradient(low = tl, high = th, name = "Rank") + scale_size(range = c(1.5, 5), guide = "none") +
+  scale_x_discrete(labels = netlabs) + labs(x = NULL, y = NULL, title = "Network rank (stability + rank)") +
+  theme_bw(base_size = 8) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom", plot.title = element_text(size = 8, hjust = 0.5))
+pA <- ggplot(bubA, aes(x = attr, y = Species)) + geom_point(aes(size = sz, colour = rank)) +
+  scale_colour_gradient(low = tl, high = th, guide = "none") + scale_size(range = c(1.5, 5), guide = "none") +
+  labs(x = NULL, y = NULL, title = "Abundance") +
+  theme_bw(base_size = 8) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(size = 8, hjust = 0.5))
+pR <- ggplot(dat, aes(x = total_len, y = Species, fill = rank_total)) + geom_col(width = 0.7) +
+  scale_fill_gradient(low = tl, high = th, name = "Total rank") + labs(x = "Total rank", y = NULL, title = "Total") +
+  theme_bw(base_size = 8) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major.y = element_blank(), legend.position = "bottom", plot.title = element_text(size = 8, hjust = 0.5))
+combined <- pL + pN + pA + pR + plot_layout(widths = c(1.3, 1.9, 0.45, 1.3))
+ggsave(file.path(DIR_RES, "D_core_sp_selection_composite.pdf"), combined, width = 8.1, height = 4.6)
 
-# Compute within-group ranks for long_ranks
-saving_info_ranked <- bind_rows(
-  saving_info %>%
-    filter(is_candidate) %>%
-    mutate(across(c(rank_abundance, degree_stability, degree_rank,
-                    closeness_stability, closeness_rank, diversity_contribute),
-                  ~ rank(.x), .names = "{.col}_grprank")),
-  saving_info %>%
-    filter(!is_candidate) %>%
-    mutate(across(c(rank_abundance, degree_stability, degree_rank,
-                    closeness_stability, closeness_rank),
-                  ~ rank(.x), .names = "{.col}_grprank"),
-           diversity_contribute_grprank = NA_real_)
-)
+write.csv(saving_info[, c("Species", "degree_stability", "degree_rank", "closeness_stability",
+                          "closeness_rank", "betweenness_stability", "betweenness_rank",
+                          "rank_abundance", "diversity_contribute", "rank_total")],
+          file.path(DIR_TAB, "Species_within_saving_module.csv"), row.names = FALSE)
 
-vars <- c("rank_abundance", "degree_stability", "degree_rank",
-          "closeness_stability", "closeness_rank", "diversity_contribute")
-grprank_vars <- paste0(vars, "_grprank")
-
-long_total_plot <- bind_rows(
-  reshape2::melt(saving_info_ranked[saving_info_ranked$is_candidate, 
-                                    c("Species", "rank_total")]) %>%
-    mutate(group = "candidate"),
-  reshape2::melt(saving_info_ranked[!saving_info_ranked$is_candidate,
-                                    c("Species", "rank_abundance")]) %>%
-    mutate(variable = "rank_total", group = "non-candidate")
-) %>%
-  mutate(
-    bar_height = ifelse(
-      group == "candidate",
-      rank(-value[group == "candidate"], na.last = FALSE)[match(value, value[group == "candidate"])],
-      rank(-value[group == "non-candidate"], na.last = FALSE)[match(value, value[group == "non-candidate"])]
-    )
-  )
-
-# Define global species order
-species_levels <- c(
-  long_total_plot %>%
-    filter(group == "non-candidate") %>%
-    arrange(desc(bar_height)) %>%
-    pull(Species) %>%
-    as.character(),
-  long_total_plot %>%
-    filter(group == "candidate") %>%
-    arrange(bar_height) %>%
-    pull(Species) %>%
-    as.character()
-)
-
-long_total_plot <- long_total_plot %>%
-  mutate(Species = factor(Species, levels = species_levels))
-
-long_ranks <- reshape2::melt(
-  saving_info_ranked[ , c("Species", "is_candidate", grprank_vars)],
-  id.vars = c("Species", "is_candidate")
-) %>%
-  mutate(
-    variable = factor(variable,
-                      levels = grprank_vars,
-                      labels = vars),
-    group = ifelse(is_candidate, "candidate", "non-candidate")
-  )
-colnames(long_ranks)[colnames(long_ranks) == "value"] <- "Rank"
-long_ranks <- long_ranks %>%
-  mutate(Species = factor(Species, levels = species_levels))
-
-pdf(file.path(DIR_RES, "D_core_sp_selection_p1.pdf"), width = 5, height = 5)
-ggplot(data = long_ranks, aes(x = variable, y = Species)) +
-  geom_point(data = subset(long_ranks, group == "non-candidate"),
-             aes(col = Rank), size = 2) +
-  scale_color_distiller(palette = "Greys", name = "Rank (non-candidate)") +
-  ggnewscale::new_scale_color() +
-  geom_point(data = subset(long_ranks, group == "candidate"),
-             aes(col = Rank), size = 2) +
-  scale_color_distiller(palette = "Reds", name = "Rank (candidate)") +
-  theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1),
-        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
-dev.off()
-
-pdf(file.path(DIR_RES, "D_core_sp_selection_p2.pdf"), width = 5, height = 5)
-ggplot(data = long_total_plot, aes(y = bar_height, x = Species)) +
-  geom_bar(data = subset(long_total_plot, group == "non-candidate"),
-           aes(fill = value), stat = "identity") +
-  scale_fill_distiller(palette = "Greys", name = "Rank (non-candidate)") +
-  ggnewscale::new_scale_fill() +
-  geom_bar(data = subset(long_total_plot, group == "candidate"),
-           aes(fill = value), stat = "identity") +
-  scale_fill_distiller(palette = "Reds", name = "Rank (candidate)") +
-  coord_flip() +
-  theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1))
-dev.off()
-
-write.csv(long_total_plot[ , c(1, 3, 4)], 
-          file.path(DIR_TAB, "Species_within_saving_module.csv"))
-
-# Filter candidate species
-species_list <- long_total_plot[long_total_plot$group == "candidate", "Species"] %>%
-  droplevels(.) %>%
-  as.character()
+# Candidate species (positively contributing) for the network plot
+species_list <- as.character(saving_info[["Species"]])
 
 pdf(file.path(DIR_RES, "Net_all_candidates.pdf"), width = 12, height = 5)
 ggplot() +
