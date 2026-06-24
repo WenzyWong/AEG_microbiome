@@ -623,15 +623,24 @@ module_species <- module_otu %>%
   summarise(species = paste(standard_name, collapse = "|"),
             otu = paste(ID, collapse = "|"))
 
-# The biggest normal module that does not resemble any tumour module
-saving_module <- data.frame(
-  Species = strsplit(module_species$species[module_species$group == "Normalmodel_1"], "\\|")[[1]],
-  OTU = strsplit(module_species$otu[module_species$group == "Normalmodel_1"], "\\|")[[1]]
-) %>%
+# Large Normal modules (>5 named-species nodes after the g__/s__ filter)
+normal_top <- module_otu %>%
+  filter(Group == "Normal") %>%
+  count(group) %>%
+  filter(n > 5) %>%
+  pull(group)
+tumour_module_map <- module_otu %>%
+  filter(Group == "Tumour") %>%
+  distinct(OTU = ID, tumour_module = group)
+saving_module <- module_otu %>%
+  filter(group %in% normal_top) %>%
+  distinct(OTU = ID, Species = standard_name, normal_module = group) %>%
+  left_join(tumour_module_map, by = "OTU") %>%
+  mutate(tumour_module = replace_na(tumour_module, "none")) %>%
   merge(., node, by.x = "OTU", by.y = "ID")
 saving_module$abundance <-
   (apply(mtx_cpm, MARGIN = 1, FUN = mean) / 1e+4)[saving_module$Species]
-saving_module <- na.omit(saving_module)
+saving_module <- saving_module[!is.na(saving_module$abundance), ]
 
 # Regression: Shannon index - candidate species
 elnet_sp <- unique(saving_module$Species)
