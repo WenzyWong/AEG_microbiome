@@ -528,8 +528,10 @@ dev.off()
 module_otu <- module[[2]]
 module_otu$taxa_g <- ps.obj@tax_table[module_otu$ID, "Rank6"]
 module_otu$taxa_s <- ps.obj@tax_table[module_otu$ID, "Rank7"]
+module_otu$taxa_k <- ps.obj@tax_table[module_otu$ID, "Rank1"]
 module_otu <- module_otu %>%
-  filter(taxa_g != "g__",
+  filter(taxa_k != "k__Viruses",
+         taxa_g != "g__",
          taxa_s != "s__") %>%
   mutate(standard_name = paste0(gsub("g__", "", taxa_g)  %>% 
                                   toTitleCase(.), "_", 
@@ -1238,39 +1240,42 @@ legend("bottomright", legend = c("Tumour", "Normal"),
 dev.off()
 
 # Network topology metrics per group
-node_full <- net_dt$net.cor.matrix$node
-edge_full <- net_dt$net.cor.matrix$edge
+node_full <- net_dt[["net.cor.matrix"]][["node"]]
+edge_full <- net_dt[["net.cor.matrix"]][["edge"]]
 
 build_grp_graph <- function(grp) {
-  nd <- node_full[node_full$label == grp & node_full$igraph.degree > 0, ]
-  ed <- edge_full[edge_full$label == grp &
-                    edge_full$OTU_1 %in% nd$ID &
-                    edge_full$OTU_2 %in% nd$ID, ]
+  nd <- node_full[node_full[["label"]] == grp &
+                    node_full[["igraph.degree"]] > 0 &
+                    node_full[["Rank1"]] != "k__Viruses" &   # drop viral nodes
+                    node_full[["Rank6"]] != "g__" &          # keep genus-resolved
+                    node_full[["Rank7"]] != "s__", ]         # keep species-resolved (downstream focus is species)
+  ed <- edge_full[edge_full[["label"]] == grp &
+                    edge_full[["OTU_1"]] %in% nd[["ID"]] &
+                    edge_full[["OTU_2"]] %in% nd[["ID"]], ]
   igraph::graph_from_data_frame(
     ed[, c("OTU_1", "OTU_2")],
-    vertices = data.frame(name = nd$ID),
+    vertices = data.frame(name = nd[["ID"]]),
     directed = FALSE
   ) %>% igraph::simplify()
 }
-groups_net <- unique(node_full$label)
+groups_net <- as.character(unique(node_full[["label"]]))
 graphs_net <- setNames(lapply(groups_net, build_grp_graph), groups_net)
 
 topo_df <- lapply(groups_net, function(g) {
   ig <- graphs_net[[g]]
   data.frame(
-    Group      = g,
+    Group      = ifelse(grepl("^Tumour", g), "Tumour", "Normal"),  # map by actual label (avoids prior positional swap)
     Nodes      = igraph::vcount(ig),
     Edges      = igraph::ecount(ig),
     Density    = igraph::edge_density(ig),
     AvgDegree  = mean(igraph::degree(ig)),
     Clustering = igraph::transitivity(ig, type = "global"),
-    Modularity = igraph::modularity(igraph::cluster_fast_greedy(ig))
+    Efficiency = igraph::global_efficiency(ig)
   )
-}) %>% do.call(rbind, .) %>%
-  mutate(Group = c("Tumour", "Normal"))
+}) %>% do.call(rbind, .)
 write.csv(topo_df, file.path(DIR_TAB, "Res_network_topology.csv"), row.names = FALSE)
 
-pdf(file.path(DIR_RES, "S_network_topology.pdf"), width = 5, height = 4)
+pdf(file.path(DIR_RES, "S_network_topology.pdf"), width = 6.5, height = 4)
 ggplot(
   reshape2::melt(topo_df, id.vars = "Group",
                  variable.name = "metric", value.name = "value"),
@@ -1279,13 +1284,14 @@ ggplot(
   geom_col(width = 0.6) +
   geom_text(aes(label = signif(value, 3)), vjust = -0.4, size = 2.5) +
   scale_fill_manual(values = c(Normal = "#126CAA", Tumour = "#9A342C")) +
-  facet_wrap(~ metric, scales = "free_y", nrow = 2) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 2, labeller = labeller(metric = c(Nodes = "Nodes (count)", Edges = "Edges (count)", Density = "Density (0-1)", AvgDegree = "Mean degree (per node)", Clustering = "Clustering (0-1)", Efficiency = "Global efficiency (0-1)"))) +
   xlab(NULL) + ylab(NULL) +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
         axis.text = element_text(colour = 1),
         axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         strip.background = element_blank(),
+        strip.text = element_text(size = 7),
         legend.position = "none")
 dev.off()
 
