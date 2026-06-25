@@ -278,6 +278,17 @@ saveRDS(rna_cor_sp, file.path(DIR_RDS, "rna_species_gene_cor.rds"))
 prot_cor_sp <- calc_prot_cor(mtx_clr_sp, mtx_prot_log, samples_common)
 saveRDS(prot_cor_sp, file.path(DIR_RDS, "prot_species_protein_cor.rds"))
 
+# Per-species RNA-protein concordance: % of each species' significantly RNA-correlated
+# genes that are RNA-protein concordant (microbe-independent concordant_genes list).
+sp_rna_sig <- abs(rna_cor_sp) >= 0.3 & spearman_pval(rna_cor_sp, n_common) < 0.05
+sp_rna_sig[is.na(sp_rna_sig)] <- FALSE
+sp_concord_pct <- sapply(rownames(rna_cor_sp), function(sp) {
+  g <- colnames(rna_cor_sp)[sp_rna_sig[sp, ]]
+  if (length(g) == 0) return(0)
+  mean(g %in% concordant_genes) * 100
+})
+concord_col_sp <- colorRamp2(c(0, max(sp_concord_pct, na.rm = TRUE)), c("#FEE5D9", "#A50F15"))
+
 ################################################
 # Heatmap: pathway-annotated species correlation
 pathways_ordered <- c(
@@ -329,6 +340,44 @@ gsea_results_sp <- lapply(setNames(rownames(rna_cor_sp), rownames(rna_cor_sp)), 
     mutate(species = sp)
 })
 saveRDS(gsea_results_sp, file.path(DIR_RDS, "gsea_correlated_sp.rds"))
+
+# ----------------------------------------------------------------------------
+# Hallmark GSEA stratified by tumour Shannon-diversity High vs Low
+# Grouping reproduced one-to-one from 04: raw-count species Shannon over the
+# survival cohort (C samples in the clinical roster), median split into High/Low.
+mtx_count   <- readRDS(file.path(DIR_RDS, "sAEG_Count_RNA_FiltMyco.rds"))
+shan_tumour <- apply(mtx_count[, grepl("C", colnames(mtx_count))], 2, vegan::diversity)
+surv_samp   <- intersect(names(shan_tumour), paste0("C", clinical$No.))
+shan_tumour <- shan_tumour[surv_samp]
+grp_all     <- ifelse(shan_tumour > median(shan_tumour), "High", "Low")
+# DESeq2 differential expression (High vs Low) on raw tumour gene counts;
+# genes ranked by log2FC (descending) feed the GSEA.
+ec_div <- readRDS(file.path(DIR_RDS, "hAEG_ExprCounts_Tumour.rds"))
+rownames(ec_div) <- ec_div$Gene; ec_div$Gene <- NULL
+samples_div <- intersect(colnames(ec_div), names(grp_all))
+cnt_div <- round(as.matrix(ec_div[, samples_div])); storage.mode(cnt_div) <- "integer"
+cnt_div <- cnt_div[rowSums(cnt_div >= 5) >= 0.2 * ncol(cnt_div), ]
+dds_div <- DESeq2::DESeqDataSetFromMatrix(
+  countData = cnt_div,
+  colData   = data.frame(group = factor(grp_all[samples_div], levels = c("Low", "High"))),
+  design    = ~ group)
+dds_div <- DESeq2::DESeq(dds_div)
+res_div <- as.data.frame(DESeq2::results(dds_div, contrast = c("group", "High", "Low")))
+res_div$gene <- rownames(res_div)
+write.csv(res_div[order(-res_div$log2FoldChange),
+                  c("gene", "baseMean", "log2FoldChange", "lfcSE", "pvalue", "padj")],
+          file.path(DIR_TAB, "DEseq2_diversity_HighLow.csv"), row.names = FALSE)
+rank_div <- setNames(res_div$log2FoldChange, res_div$gene)
+rank_div <- sort(rank_div[is.finite(rank_div)], decreasing = TRUE)
+hallmark_all <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  select(gs_name, gene_symbol) %>% { split(.$gene_symbol, .$gs_name) }
+set.seed(42)
+gsea_diversity <- fgsea(pathways = hallmark_all, stats = rank_div,
+                        minSize = 10, maxSize = 500, nPermSimple = 100000, eps = 0) %>%
+  arrange(padj)
+write.csv(gsea_diversity %>% mutate(leadingEdge = sapply(leadingEdge, paste, collapse = ";")),
+          file.path(DIR_TAB, "GSEA_hallmark_diversity_HighLow.csv"), row.names = FALSE)
+saveRDS(gsea_diversity, file.path(DIR_RDS, "gsea_hallmark_diversity.rds"))
 
 core_genes_sp <- lapply(names(gsea_results_sp), function(sp) {
   res <- gsea_results_sp[[sp]]
@@ -406,9 +455,9 @@ sp_log2cpm  <- log2(rowMeans(mtx_cpm_sp_filt) + 1)
 abund_col_sp <- colorRamp2(range(sp_log2cpm), c("#e8f4f8", "#1a5276"))
 
 prot_anno_sp <- rowAnnotation(
-  Proteome_overlap = anno_simple(
-    ifelse(sp_genus %in% high_overlap_g, "yes", "no"),
-    col = c("yes" = "tomato", "no" = "grey80"), na_col = "grey90", width = unit(4, "mm")
+  RNA_protein_concord = anno_simple(
+    sp_concord_pct[rownames(rna_mat_sp)],
+    col = concord_col_sp, na_col = "grey90", width = unit(4, "mm")
   ),
   log2CPM = anno_simple(
     sp_log2cpm[rownames(rna_mat_sp)],
@@ -440,9 +489,9 @@ draw(ht_sp, annotation_legend_list = list(
   Legend(labels = pw_short_sp, legend_gp = gpar(fill = pw_colors_sp),
          title = "Pathway", ncol = 2,
          title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)),
-  Legend(labels = c("> 10%", "<= 10%"), legend_gp = gpar(fill = c("tomato", "grey80")),
-         title = "Proteome overlap",
-         title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)),
+  Legend(col_fun = concord_col_sp, title = "RNA-protein concordant (%)",
+         title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
+         direction = "vertical"),
   Legend(col_fun = abund_col_sp, title = "log2CPM",
          title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
          direction = "vertical")
@@ -516,7 +565,7 @@ make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
       guide  = "none"
     ) +
     scale_size_continuous(
-      range  = c(0.8, 3.5),
+      range  = c(0.6, 2.0),
       limits = c(cor_threshold, fc_cap),
       breaks = c(0.3, 0.4, 0.5, 0.6),
       name   = "|Spearman r|",
@@ -593,7 +642,7 @@ p_lgd <- ggplot() +
     aes(x, y, size = sz), colour = "grey40"
   ) +
   scale_size_continuous(
-    range  = c(0.3, 1.3),
+    range  = c(0.6, 2.0),
     limits = c(cor_threshold, fc_cap),
     breaks = c(0.3, 0.4, 0.5, 0.6),
     name   = "|Spearman rs|"
@@ -707,8 +756,10 @@ p_rna_kegg <- ggplot(df_plot_kegg,
     legend.position  = "right"
   )
 
+# Height scales with the number of pathways so bubbles do not overlap
+n_path_kegg <- length(unique(df_plot_kegg$pw_label))
 ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_KEGG_cor.pdf"),
-       p_rna_kegg, width = 12, height = 8)
+       p_rna_kegg, width = 12, height = max(8, n_path_kegg * 0.33 + 1.5), limitsize = FALSE)
 
 ####################
 # Species Rs scatter
@@ -743,11 +794,13 @@ bg_df <- data.frame(
 )
 
 sp_genus_order <- gsub("_.*", "", sp_order)
+loll_max <- max(sp_concord_pct, na.rm = TRUE)
 label_df_box <- data.frame(
-  species    = factor(sp_order, levels = sp_order),
-  label_fill = ifelse(sp_genus_order %in% high_overlap_g, "tomato", "grey"),
+  species = factor(sp_order, levels = sp_order),
+  concord = sp_concord_pct[sp_order],
   stringsAsFactors = FALSE
 )
+label_df_box$txt_col <- ifelse(label_df_box$concord > 0.5 * loll_max, "white", "grey15")
 
 y_cap      <- 0.8
 jitter_pos <- position_jitter(width = 0.35, height = 0, seed = 42)
@@ -771,14 +824,18 @@ p_multi_volc <- ggplot() +
     max.overlaps = 20, segment.size = 0.3, segment.color = "grey50",
     show.legend = FALSE, box.padding = 0.2, force = 1.5, seed = 42
   ) +
+  ggnewscale::new_scale_fill() +
   geom_tile(data = label_df_box,
-            aes(x = species, y = 0, fill = label_fill),
+            aes(x = species, y = 0, fill = concord),
             height = 0.08, width = 0.9, color = "white", linewidth = 0.3,
             inherit.aes = FALSE) +
+  scale_fill_gradient(low = "#FEE5D9", high = "#A50F15",
+                      name = "RNA-protein concordant (%)", limits = c(0, NA)) +
+  ggnewscale::new_scale_color() +
   geom_text(data = label_df_box,
-            aes(x = species, y = 0, label = gsub("_", " ", species)),
-            size = 2.0, color = "white", fontface = "italic",
-            inherit.aes = FALSE) +
+            aes(x = species, y = 0, label = gsub("_", " ", species), color = txt_col),
+            size = 2.0, fontface = "italic", inherit.aes = FALSE, show.legend = FALSE) +
+  scale_color_identity() +
   scale_y_continuous(limits = c(-y_cap * 1.35, y_cap * 1.35),
                      breaks = seq(-0.6, 0.6, 0.3)) +
   labs(x = "Species", y = "Spearman Rs") +
