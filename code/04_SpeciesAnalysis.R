@@ -1230,13 +1230,28 @@ dev.off()
 mtx_int <- round(mtx_count[, c(paste0("N", paired_ids), paste0("C", paired_ids))])
 
 # Rarefaction curves to confirm sequencing depth saturates richness
-pdf(file.path(DIR_RES, "S_rarefaction.pdf"), width = 5, height = 4)
-par(mar = c(4, 4, 1, 1))
-rarecurve(t(mtx_int), step = 500, label = FALSE,
-          col = ifelse(grepl("^C", colnames(mtx_int)), "#9A342C", "#126CAA"),
-          xlab = "Read counts", ylab = "Observed species")
-legend("bottomright", legend = c("Tumour", "Normal"),
-       col = c("#9A342C", "#126CAA"), lty = 1, bty = "n")
+pdf(file.path(DIR_RES, "S_rarefaction.pdf"), width = 4.5, height = 4.5)
+par(mar = c(4, 4, 1, 1), pty = "s")
+rc <- rarecurve(t(mtx_int), step = 500, label = FALSE, col = "grey75",
+                xaxt = "n", xlab = "Read counts", ylab = "Observed species")
+axis(1, at = axTicks(1),
+     labels = formatC(axTicks(1), format = "f", digits = 0, big.mark = ","))
+# Fit a Michaelis-Menten saturation model to all pooled (reads, richness) points
+fit_df <- do.call(rbind, lapply(rc, function(v)
+  data.frame(reads = attr(v, "Subsample"), richness = as.numeric(v))))
+mm <- nls(richness ~ SSmicmen(reads, Smax, K), data = fit_df)
+Smax <- coef(mm)[["Smax"]]; K <- coef(mm)[["K"]]
+med_depth <- median(colSums(mtx_int))           # typical sequencing depth
+capt_pct  <- med_depth / (med_depth + K)        # fraction of Smax captured
+fit_med   <- Smax * med_depth / (K + med_depth)
+xx <- seq(0, max(fit_df$reads), length.out = 400)
+lines(xx, Smax * xx / (K + xx), col = "#9A342C", lwd = 2.5)
+abline(h = Smax, lty = 2, col = "grey40")
+text(0.30 * max(xx), Smax, pos = 1, cex = 0.7, col = "grey20",
+     labels = paste0("Estimated ceiling  Smax = ", formatC(Smax, format = "f", digits = 0, big.mark = ",")))
+points(med_depth, fit_med, pch = 19, col = "#9A342C")
+text(med_depth, fit_med, pos = 4, cex = 0.7, col = "grey20",
+     labels = paste0("median depth ", formatC(med_depth, format = "f", digits = 0, big.mark = ","), " reads  (~", round(100 * capt_pct), "% captured)"))
 dev.off()
 
 # Network topology metrics per group
