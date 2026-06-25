@@ -13,14 +13,15 @@ library(tidyverse)
 library(ggplot2)
 library(ggrepel)
 library(ggnewscale)
+library(patchwork)
 library(compositions)
-library(limma)
+# library(limma)  # not used in this script
 library(ComplexHeatmap)
 library(circlize)
 library(vegan)
 library(paletteer)
 library(msigdbr)
-library(rEDM)
+# library(rEDM)   # not used in this script
 library(GENIE3)
 library(foreach)
 library(doParallel)
@@ -94,8 +95,6 @@ calc_prot_cor <- function(clr_mat, prot_mat, samples) {
 #############################
 # RNA-seq correlation (genus)
 mtx_tpm_cor <- log1p(as.matrix(mtx_htpm_filt[, samples_common]))
-cv_gene     <- apply(mtx_tpm_cor, 1, function(x) sd(x) / (mean(x) + 1e-6))
-mtx_tpm_cor <- mtx_tpm_cor[cv_gene > 0.2, ]
 
 rna_cor_mat <- do.call(cbind, lapply(
   split(seq_len(nrow(mtx_tpm_cor)), ceiling(seq_len(nrow(mtx_tpm_cor)) / 2000)),
@@ -118,29 +117,53 @@ prot_cor_mat <- calc_prot_cor(mtx_clr, mtx_prot_log, samples_common)
 saveRDS(prot_cor_mat, file.path(DIR_RDS, "prot_genus_protein_cor.rds"))
 
 #################
+# ----------------------------------------------------------------------------
+# RNA-protein concordant gene list (microbe-independent)
+# Per gene: Spearman of RNA-seq log-TPM vs proteome log2-intensity across the
+# one-to-one paired tumour samples; keep genes with Rs > 0.3 & BH-FDR < 0.05.
+samples_rp <- intersect(grep("^C", colnames(mtx_htpm_filt), value = TRUE),
+                        grep("^C", colnames(mtx_hpro),       value = TRUE))
+rna_rp  <- log1p(as.matrix(mtx_htpm_filt[, samples_rp]))
+prot_rp <- as.matrix(mutate(mtx_hpro[, samples_rp], across(everything(), as.numeric)))
+rownames(prot_rp) <- rownames(mtx_hpro)
+prot_rp[prot_rp == 0] <- NA
+prot_rp <- log2(prot_rp)
+prot_rp <- prot_rp[rowSums(!is.na(prot_rp)) >= ceiling(0.5 * length(samples_rp)), , drop = FALSE]
+prot_sym_map <- setNames(trimws(sub(";.*", "", mtx_hpro$Gene_names)), mtx_hpro$Protein_group)
+prot_rp_sym  <- prot_sym_map[rownames(prot_rp)]
+keep_rp <- !is.na(prot_rp_sym) & prot_rp_sym != "" & prot_rp_sym %in% rownames(rna_rp)
+prot_rp     <- prot_rp[keep_rp, , drop = FALSE]
+prot_rp_sym <- prot_rp_sym[keep_rp]
+rp_res <- data.frame(gene = prot_rp_sym, rs = NA_real_, p = NA_real_, stringsAsFactors = FALSE)
+for (i in seq_len(nrow(prot_rp))) {
+  ok <- !is.na(rna_rp[prot_rp_sym[i], ]) & !is.na(prot_rp[i, ])
+  if (sum(ok) >= 10) {
+    ct <- suppressWarnings(cor.test(rna_rp[prot_rp_sym[i], ok], prot_rp[i, ok],
+                                    method = "spearman", exact = FALSE))
+    rp_res$rs[i] <- ct$estimate
+    rp_res$p[i]  <- ct$p.value
+  }
+}
+rp_gene <- rp_res %>% filter(!is.na(rs)) %>%
+  group_by(gene) %>% slice_max(rs, n = 1, with_ties = FALSE) %>% ungroup() %>%
+  mutate(padj = p.adjust(p, method = "BH"))
+concordant_genes <- rp_gene$gene[rp_gene$rs > 0.3 & rp_gene$padj < 0.05]
+write.csv(rp_gene, file.path(DIR_TAB, "RNA_protein_concordant_genes.csv"), row.names = FALSE)
+
+#################
 # Circos lollipop
+# Per genus: % of its RNA-correlated genes that are RNA-protein concordant.
 n_common <- length(samples_common)
-rna_sig  <- abs(rna_cor_mat) >= 0.3 & spearman_pval(rna_cor_mat,  n_common) < 0.05
-prot_sig <- abs(prot_cor_mat) >= 0.3 & spearman_pval(prot_cor_mat, n_common) < 0.05
-rna_sig[is.na(rna_sig)]   <- FALSE
-prot_sig[is.na(prot_sig)] <- FALSE
-
-prot_gene_map <- setNames(mtx_hpro$Gene_names, mtx_hpro$Protein_group)
-
+rna_sig  <- abs(rna_cor_mat) >= 0.3 & spearman_pval(rna_cor_mat, n_common) < 0.05
+rna_sig[is.na(rna_sig)] <- FALSE
 overlap_df <- data.frame(
-  genus      = rownames(rna_cor_mat),
-  count      = sapply(rownames(rna_cor_mat), function(g) {
-    rna_genes  <- colnames(rna_cor_mat)[rna_sig[g, ]]
-    prot_genes <- colnames(prot_cor_mat)[prot_sig[g, ]] %>%
-      { prot_gene_map[.] } %>% na.omit() %>%
-      paste(collapse = ";") %>% strsplit(";") %>%
-      unlist() %>% trimws() %>% unique()
-    length(intersect(rna_genes, prot_genes))
-  }),
-  prot_total = rowSums(prot_sig),
+  genus     = rownames(rna_cor_mat),
+  count     = sapply(rownames(rna_cor_mat), function(g)
+    length(intersect(colnames(rna_cor_mat)[rna_sig[g, ]], concordant_genes))),
+  rna_total = rowSums(rna_sig),
   stringsAsFactors = FALSE
 ) %>%
-  mutate(pct = ifelse(prot_total > 0, count / prot_total * 100, 0)) %>%
+  mutate(pct = ifelse(rna_total > 0, count / rna_total * 100, 0)) %>%
   .[match(top20_genera, .$genus), ]
 
 genera <- overlap_df$genus
@@ -230,14 +253,15 @@ circos.text(0, 0, labels = "Abund.\n(%)",
 
 legend("center", legend = gsub("_", " ", genera), fill = genus_colors[genera],
        border = NA, cex = 0.55, ncol = 2, title = "Genus", bty = "n")
-title(main = expression("Overlap genes (|" * italic(r)[s] * "| \u2265 0.3, p < 0.05)"),
+title(main = expression("RNA-protein concordant fraction (" * italic(r)[s] * " > 0.3, FDR < 0.05)"),
       cex.main = 1.0, line = -1.5)
 circos.clear()
 dev.off()
 
 #######################
 # Species-level analysis
-target_sp  <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"), row.names = 1)
+# Target species: saving-module candidates with positive Shannon-diversity contribution
+target_sp  <- read.csv(file.path(DIR_TAB, "Species_within_saving_module.csv"))
 sp_in_data <- intersect(target_sp$Species, rownames(mtx_cpm_sp))
 mtx_cpm_sp_filt <- mtx_cpm_sp[sp_in_data, samples_common]
 mtx_clr_sp <- t(as.matrix(clr(t(mtx_cpm_sp_filt + 0.5))))
@@ -984,10 +1008,10 @@ tpm_deconv <- tpm_deconv[!duplicated(rownames(tpm_deconv)), ]
 cat("TPM matrix dim:", dim(tpm_deconv), "\n")
 
 # Deconvolution
-deconv_timer     <- deconvolute(tpm_deconv, method = "timer",
+deconv_timer <- deconvolute(tpm_deconv, method = "timer",
                                 indications = rep("stad", ncol(tpm_deconv)))
 deconv_quantiseq <- deconvolute(tpm_deconv, method = "quantiseq")
-deconv_epic      <- deconvolute(tpm_deconv, method = "epic")
+deconv_epic <- deconvolute(tpm_deconv, method = "epic")
 deconv_mcp <- deconvolute(tpm_deconv, method = "mcp_counter")
 deconv_est <- deconvolute(tpm_deconv, method = "estimate")
 deconv_abis <- deconvolute(tpm_deconv, method = "abis")
