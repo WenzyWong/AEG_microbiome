@@ -684,7 +684,7 @@ contrib_df <- coef_elnet %>%
   mutate(coef = lambda.min)
 mod_cols <- c("Normalmodel_1" = "#4393C3", "Normalmodel_4" = "#5AAE61")
 
-lollipop_contribution <- function(df, fname, height) {
+lollipop_contribution <- function(df, fname, height, width = 5.5) {
   df <- df %>% mutate(species = factor(species, levels = species[order(coef)]))
   p <- ggplot(df, aes(x = coef, y = species, colour = normal_module)) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
@@ -700,7 +700,7 @@ lollipop_contribution <- function(df, fname, height) {
   } else {
     p <- p + geom_point(size = 2.6)
   }
-  ggsave(file.path(DIR_RES, fname), p, width = 5.5, height = height)
+  ggsave(file.path(DIR_RES, fname), p, width = width, height = height)
 }
 
 # Main figure: positively contributing species
@@ -708,7 +708,7 @@ lollipop_contribution(contrib_df %>% filter(coef > 0),
                       "Elnet_shannon_contribution_positive.pdf", 3.2)
 # Supplementary figure: zero- and negative-contribution species
 lollipop_contribution(contrib_df %>% filter(coef <= 0),
-                      "Elnet_shannon_contribution_zero_negative.pdf", 4.5)
+                      "Elnet_shannon_contribution_zero_negative.pdf", 4.5, width = 8)
 
 # Rank all parameters
 library(patchwork)
