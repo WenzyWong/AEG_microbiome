@@ -54,17 +54,18 @@ shan_comp_list <- list(c("AEG", "ESCC"),
 pdf(file.path(DIR_RES, "A_alpha_diversity_among_cancer.pdf"), height = 3.3, width = 4)
 ggplot(shan_violin, aes(x = Cancer, y = Shannon, fill = Cancer)) +
   geom_violin() +
-  scale_fill_manual(values = c("#60AB9EFF", "#485682FF", "#5C8447FF")) +
+  scale_fill_manual(values = c("#74ACCE", "#EEC549", "#8B87BA")) +
   geom_boxplot(width = .2, fill = "grey75",
                outlier.colour = NA) +
   geom_jitter(alpha = .8, color = "grey75",
               size = .2) +
   xlab("Cancer Type") +
-  ylab("Shannon Index") + 
+  ylab("Shannon Index") +
   stat_compare_means(comparisons = shan_comp_list) +
   theme_test() +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1)) 
+  theme(aspect.ratio = 1,
+        panel.border = element_rect(fill = NA, colour = 1),
+        axis.text = element_text(colour = 1))
 dev.off()
 
 ################
@@ -78,7 +79,7 @@ beta <- plot_beta_diversity(
   abundance_list = list(AEG = cpm_aeg, 
                         ESCC = cpm_escc, 
                         STAD = cpm_stad),
-  colors = c("#485682", "#60AB9E", "#5C8447"),
+  colors = c("#EEC549", "#74ACCE", "#8B87BA"),
   output_file = file.path(DIR_RES, "B_beta_diversity_all.pdf")
 )
 
@@ -182,7 +183,7 @@ abund_venn <- list(
 pdf(file.path(DIR_RES, "D_venn_top20.pdf"), width = 3, height = 3)
 ggvenn::ggvenn(abund_venn, c("ESCC", "AEG", "STAD"),
                show_percentage = F,
-               fill_color = c("#60AB9EFF", "#485682FF", "#5C8447FF"))
+               fill_color = c("#74ACCE", "#EEC549", "#8B87BA"))
 dev.off()
 
 # Palette shared with the AEG overall distribution (abund_aeg_distribution)
@@ -279,31 +280,58 @@ dev.off()
 
 
 ######################################
-# Compare overlapped genera separately
-box_genus <- setdiff(per_aeg$Genus, per_escc$Genus) %>%
-  setdiff(., per_stad$Genus)
-abund_box_comp <- cbind(cpm_escc[box_genus, ],
-                        cpm_aeg[box_genus, ],
-                        cpm_stad[box_genus, ])
-abund_box_comp$Genus <- rownames(abund_box_comp)
-abund_box_comp <- reshape2::melt(abund_box_comp)
-colnames(abund_box_comp) <- c("Genus", "Sample", "Relative Abundance")
+# AEG-enriched genera vs the other cancers
+# Candidates = AEG top20 (by mean relative abundance). Keep those significantly
+# HIGHER in AEG than BOTH ESCC and STAD: Wilcoxon on relative abundance,
+# BH-adjusted padj < 0.05 in both comparisons, and AEG median above both.
+aeg_cand <- names(sort(rowMeans(cpm_aeg), decreasing = TRUE))[1:20]
 
-abund_box_comp$Cancer <- c(
-  rep("ESCC", ncol(cpm_escc)),
-  rep("AEG", ncol(cpm_aeg)),
-  rep("STAD", ncol(cpm_stad))
-)
-abund_box_comp$`log2 RA` <- log2(abund_box_comp$`Relative Abundance` / 1e4 + 1)
-pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"), width = 6, height = 4)
-p_box_genus <- ggboxplot(abund_box_comp, x = "Cancer", y = "log2 RA",
-          col = "Cancer", palette = "jco", add = "jitter",
-          facet.by = "Genus") +
-  stat_compare_means(comparisons = list(c("ESCC", "AEG"),
-                                        c("AEG", "STAD"))) + 
+ra_vals <- function(mat, g) {
+  if (g %in% rownames(mat)) as.numeric(mat[g, ]) / 1e4 else rep(0, ncol(mat))
+}
+
+aeg_test <- data.frame(Genus = aeg_cand)
+for (i in seq_along(aeg_cand)) {
+  g <- aeg_cand[i]
+  a <- ra_vals(cpm_aeg, g); e <- ra_vals(cpm_escc, g); s <- ra_vals(cpm_stad, g)
+  aeg_test$p_escc[i]   <- wilcox.test(a, e)$p.value
+  aeg_test$p_stad[i]   <- wilcox.test(a, s)$p.value
+  aeg_test$med_aeg[i]  <- median(a)
+  aeg_test$med_escc[i] <- median(e)
+  aeg_test$med_stad[i] <- median(s)
+}
+aeg_test$padj_escc <- p.adjust(aeg_test$p_escc, "BH")
+aeg_test$padj_stad <- p.adjust(aeg_test$p_stad, "BH")
+aeg_test$selected  <- with(aeg_test,
+  padj_escc < 0.05 & padj_stad < 0.05 & med_aeg > med_escc & med_aeg > med_stad)
+write.csv(aeg_test, file.path(DIR_RES, "E_aeg_enriched_stats.csv"), row.names = FALSE)
+
+box_genus <- aeg_test$Genus[aeg_test$selected]          # already in AEG-abundance order
+cat("AEG-enriched significant genera (n=", length(box_genus), "):\n", sep = "")
+print(box_genus)
+
+abund_box_comp <- do.call(rbind, lapply(box_genus, function(g) rbind(
+  data.frame(Genus = g, Cancer = "ESCC", RA = ra_vals(cpm_escc, g)),
+  data.frame(Genus = g, Cancer = "AEG",  RA = ra_vals(cpm_aeg,  g)),
+  data.frame(Genus = g, Cancer = "STAD", RA = ra_vals(cpm_stad, g))
+)))
+abund_box_comp$Cancer <- factor(abund_box_comp$Cancer, levels = c("ESCC", "AEG", "STAD"))
+abund_box_comp$Genus  <- factor(abund_box_comp$Genus, levels = box_genus)
+abund_box_comp$`log2 CPM` <- log2(abund_box_comp$RA * 1e4 + 1)
+
+ncol_facet <- min(length(box_genus), 4)
+nrow_facet <- ceiling(length(box_genus) / ncol_facet)
+pdf(file.path(DIR_RES, "E_box_aeg_specific_top_genera.pdf"),
+    width = ncol_facet * 2 + 1, height = nrow_facet * 2.2 + 0.6)
+p_box_genus <- ggboxplot(abund_box_comp, x = "Cancer", y = "log2 CPM",
+          col = "Cancer", palette = c("#74ACCE", "#EEC549", "#8B87BA"),
+          add = "jitter", facet.by = "Genus", ncol = ncol_facet) +
+  stat_compare_means(comparisons = list(c("ESCC", "AEG"), c("AEG", "STAD")),
+                     size = 2.4) +
   theme_test() +
   theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1)) 
+        axis.text = element_text(colour = 1),
+        legend.position = "none")
 print(p_box_genus)
 dev.off()
 
@@ -338,4 +366,103 @@ ggplot(data = long_distribution, aes(x = variable, y = value,
         panel.grid.minor = element_blank(),
         panel.grid.major = element_blank(),
         panel.spacing.x = element_blank())
+dev.off()
+
+###############################################################
+# Supplementary: sequencing-depth QC & alpha diversity by tissue
+###############################################################
+
+## ---- QC: per-sample bacterial load (reads) & detected genera (by cancer) ----
+qc_df <- rbind(
+  data.frame(Sample = colnames(count_escc), Cancer = "ESCC",
+             Reads = colSums(count_escc), Genera = colSums(count_escc > 0)),
+  data.frame(Sample = colnames(count_aeg),  Cancer = "AEG",
+             Reads = colSums(count_aeg),  Genera = colSums(count_aeg > 0)),
+  data.frame(Sample = colnames(count_stad), Cancer = "STAD",
+             Reads = colSums(count_stad), Genera = colSums(count_stad > 0))
+)
+qc_df$Cancer <- factor(qc_df$Cancer, levels = c("ESCC", "AEG", "STAD"))
+
+cancer_cols <- c(ESCC = "#74ACCE", AEG = "#EEC549", STAD = "#8B87BA")
+cancer_comp <- list(c("ESCC", "AEG"), c("AEG", "STAD"), c("ESCC", "STAD"))
+
+# Bacterial load (per-sample bacterial reads). NOTE: raw reads are NOT normalised
+# to host DNA input, so this largely reflects sequencing depth (ESCC ~13x shallower),
+# not absolute bacterial load.
+pdf(file.path(DIR_RES, "S_qc_bacterial_load_among_cancer.pdf"), width = 4, height = 4)
+print(
+  ggplot(qc_df, aes(x = Cancer, y = Reads, fill = Cancer)) +
+    geom_violin(scale = "width", colour = NA, alpha = .8) +
+    geom_boxplot(width = .18, fill = "grey90", outlier.colour = NA) +
+    geom_jitter(width = .12, size = .2, colour = "grey40", alpha = .5) +
+    scale_fill_manual(values = cancer_cols) +
+    stat_compare_means(comparisons = cancer_comp, size = 2.4) +
+    scale_y_log10() +
+    xlab("") + ylab("Bacterial reads / sample") +
+    labs(caption = "Raw bacterial reads (not host-normalised); reflects sequencing depth") +
+    theme_test() +
+    theme(aspect.ratio = 1,
+          panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1),
+          plot.caption = element_text(size = 6, colour = "grey40"),
+          legend.position = "none")
+)
+dev.off()
+
+# Detected genera per sample (violin + box)
+pdf(file.path(DIR_RES, "S_qc_detected_genera_among_cancer.pdf"), width = 3.6, height = 3.8)
+print(
+  ggplot(qc_df, aes(x = Cancer, y = Genera, fill = Cancer)) +
+    geom_violin(scale = "width", colour = NA, alpha = .8) +
+    geom_boxplot(width = .18, fill = "grey90", outlier.colour = NA) +
+    geom_jitter(width = .12, size = .2, colour = "grey40", alpha = .5) +
+    scale_fill_manual(values = cancer_cols) +
+    stat_compare_means(comparisons = cancer_comp, size = 2.4) +
+    xlab("") + ylab("Detected genera / sample") +
+    theme_test() +
+    theme(aspect.ratio = 1,
+          panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1),
+          legend.position = "none")
+)
+dev.off()
+
+
+## ---- Alpha diversity among cancers (pooled): Shannon / Simpson / Chao1 ----
+alpha_index_df <- function(count_mat, cancer) {
+  tm <- t(count_mat)
+  est <- vegan::estimateR(tm)
+  data.frame(Sample = colnames(count_mat), Cancer = cancer,
+             Shannon = vegan::diversity(tm, "shannon"),
+             Simpson = vegan::diversity(tm, "simpson"),
+             Chao1   = est["S.chao1", ])
+}
+alpha_idx <- rbind(alpha_index_df(count_escc, "ESCC"),
+                   alpha_index_df(count_aeg,  "AEG"),
+                   alpha_index_df(count_stad, "STAD"))
+alpha_idx$Cancer <- factor(alpha_idx$Cancer, levels = c("ESCC", "AEG", "STAD"))
+alpha_idx_long <- reshape2::melt(alpha_idx, id.vars = c("Sample", "Cancer"),
+                                 measure.vars = c("Shannon", "Simpson", "Chao1"),
+                                 variable.name = "Metric", value.name = "Value")
+alpha_idx_long$Metric <- factor(alpha_idx_long$Metric,
+                                levels = c("Shannon", "Simpson", "Chao1"))
+
+pdf(file.path(DIR_RES, "S_alpha_diversity_among_cancer_indices.pdf"), width = 8.5, height = 3.6)
+print(
+  ggplot(alpha_idx_long, aes(x = Cancer, y = Value, fill = Cancer)) +
+    geom_violin(scale = "width", colour = NA, alpha = .8) +
+    geom_boxplot(width = .18, fill = "grey90", outlier.colour = NA) +
+    geom_jitter(width = .12, size = .2, colour = "grey40", alpha = .4) +
+    scale_fill_manual(values = cancer_cols) +
+    stat_compare_means(comparisons = cancer_comp, size = 2.2) +
+    facet_wrap(~ Metric, scales = "free_y") +
+    xlab("") + ylab("") +
+    labs(caption = "Chao1 is depth-sensitive; ESCC is ~13x shallower (see QC).") +
+    theme_test() +
+    theme(aspect.ratio = 1,
+          panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1),
+          plot.caption = element_text(size = 6, colour = "grey40"),
+          legend.position = "none")
+)
 dev.off()
