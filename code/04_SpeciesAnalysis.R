@@ -521,18 +521,55 @@ for (col in paste0("Rank", 1:7)) {
                         node[[col]])
 }
 
-pdf(file.path(DIR_RES, "Net_connectivity_tn.pdf"), width = 6, height = 5)
-tab[[1]][[2]]
+fmt_p <- function(p) ifelse(is.na(p), "= NA",
+                            ifelse(p < 0.001, "< 0.001",
+                                   paste0("= ", formatC(p, format = "f", digits = 3))))
+
+# Zi-Pi (within-module connectivity vs participation coefficient), Normal vs Tumour.
+# Significance: Wilcoxon rank-sum comparing the two networks' node distributions.
+zp_dat <- as.data.frame(tab[[1]][[2]]$layers[[2]]$data)   # cols incl. z (Zi), p (Pi), group
+zi_p <- wilcox.test(z ~ group, data = zp_dat)$p.value
+pi_p <- wilcox.test(p ~ group, data = zp_dat)$p.value
+pdf(file.path(DIR_RES, "Net_connectivity_tn.pdf"), width = 7.5, height = 5)
+print(
+  tab[[1]][[2]] +
+    labs(x = "Participation coefficient (Pi, 0-1)",
+         y = "Within-module connectivity z-score (Zi)",
+         subtitle = paste0("Normal vs Tumour (Wilcoxon):  Pi p ", fmt_p(pi_p),
+                           ",   Zi p ", fmt_p(zi_p))) +
+    theme(plot.subtitle = element_text(size = 9))
+)
 dev.off()
 
-pdf(file.path(DIR_RES, "Net_randomness_tn.pdf"), width = 6, height =5)
-tab[[1]][[3]] +
-  scale_colour_manual(values = c("#0073C2FF", "#EFC000FF")) +
-  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF")) +
-  labs(x = NULL,
-       y = NULL) +
-  theme(panel.border = element_rect(fill = NA, colour = 1),
-        axis.text = element_text(colour = 1))
+# Degree distribution: observed network vs Erdos-Renyi (E-R) random, per network.
+# x = node degree k, y = proportion of nodes P(k) (sums to 1 within each network).
+# Significance: KS test of observed vs E-R degree distribution, within each facet.
+er_dat <- as.data.frame(tab[[1]][[3]]$data)   # cols: network = P(k), group, ID = degree k, g = facet
+recon_deg <- function(P, k) {                  # rebuild node-degree sample from P(k)
+  P <- pmax(P, 0); pos <- P > 0
+  if (!any(pos)) return(numeric(0))
+  n <- round(1 / min(P[pos]))
+  rep(k, round(P * n))
+}
+ks_df <- do.call(rbind, lapply(split(er_dat, er_dat$g), function(d) {
+  obs <- d[d$group == "network", ]
+  ern <- d[d$group != "network", ]
+  pv <- tryCatch(suppressWarnings(
+    ks.test(recon_deg(obs$network, obs$ID), recon_deg(ern$network, ern$ID))$p.value),
+    error = function(e) NA_real_)
+  data.frame(g = d$g[1], lab = paste0("KS (obs vs E-R) p ", fmt_p(pv)))
+}))
+pdf(file.path(DIR_RES, "Net_randomness_tn.pdf"), width = 7.5, height = 5)
+print(
+  tab[[1]][[3]] +
+    scale_colour_manual(values = c("#0073C2FF", "#EFC000FF")) +
+    scale_fill_manual(values = c("#0073C2FF", "#EFC000FF")) +
+    labs(x = "Node degree (k)", y = "Proportion of nodes, P(k)") +
+    geom_text(data = ks_df, aes(x = Inf, y = Inf, label = lab),
+              inherit.aes = FALSE, hjust = 1.05, vjust = 1.4, size = 3) +
+    theme(panel.border = element_rect(fill = NA, colour = 1),
+          axis.text = element_text(colour = 1))
+)
 dev.off()
 
 # Network destruction resistance
@@ -713,6 +750,7 @@ x_raw <- as.matrix(log2(mtx_cpm[elnet_sp, names(shan_tumour)] + 1))
 x_clr <- apply(x_raw, 2, function(v) clr(v)) %>% t(.)
 
 # Elastic Net
+set.seed(42)  # reproducible CV folds, independent of upstream RNG
 elnet_fit <- cv.glmnet(
   x = x_clr,
   y = shan_tumour,
@@ -792,18 +830,13 @@ saving_info <- merge(
          betweenness_stability = rank(abs(betweenness_rank.normal - betweenness_rank.tumour)),
          betweenness_rank = (rank(betweenness_rank.normal) + rank(betweenness_rank.tumour)) / 2,
          diversity_contribute = coef_elnet[Species, "rank_contribute"],
-         rank_abundance = rank(-abundance)) %>%
-  mutate(rank_score = sqrt(degree_stability * degree_rank) +
-           sqrt(closeness_stability * closeness_rank) +
-           sqrt(betweenness_stability * betweenness_rank) +
-           diversity_contribute + rank_abundance) %>%
-  mutate(rank_total = rank(rank_score, ties.method = "min"))
+         rank_abundance = rank(-abundance))
 
-# Composite selection figure: lollipop | network bubbles | abundance | total-rank bar
+# Composite selection figure: lollipop | abundance | network bubbles
 netvars <- c("degree_stability", "degree_rank", "closeness_stability",
              "closeness_rank", "betweenness_stability", "betweenness_rank")
 si2 <- saving_info %>% mutate(across(all_of(c(netvars, "rank_abundance")), ~ rank(.x), .names = "{.col}_g"))
-sp_levels <- saving_info %>% arrange(desc(rank_total)) %>% pull(Species)
+sp_levels <- saving_info %>% arrange(desc(diversity_contribute)) %>% pull(Species)
 short_map <- setNames(paste0(toupper(substr(sp_levels, 1, 1)), ".", sub("^[^_]*_", "", sp_levels)), sp_levels)
 mod_cols <- c("Normalmodel_1" = "#4393C3", "Normalmodel_4" = "#5AAE61")
 tl <- "#0C8599"; th <- "#79C9C4"
@@ -816,7 +849,6 @@ bubN <- si2 %>% select(Species, all_of(netg)) %>%
   mutate(attr = factor(attr, levels = netg), sz = max(rank) + 1 - rank, Species = factor(Species, levels = sp_levels))
 bubA <- si2 %>% transmute(Species = factor(Species, levels = sp_levels), rank = rank_abundance_g,
                           sz = max(rank_abundance_g) + 1 - rank_abundance_g, attr = factor("Abundance"))
-dat <- saving_info %>% mutate(Species = factor(Species, levels = sp_levels), total_len = max(rank_total) + 1 - rank_total)
 netlabs <- c("Degree stab.", "Degree", "Closeness stab.", "Closeness", "Betweenness stab.", "Betweenness")
 pL <- ggplot(loll, aes(x = coef, y = Species, colour = normal_module)) +
   geom_segment(aes(x = 0, xend = coef, yend = Species), linewidth = 0.6) + geom_point(size = 2.4) +
@@ -831,15 +863,12 @@ pA <- ggplot(bubA, aes(x = attr, y = Species)) + geom_point(aes(size = sz, colou
   scale_colour_gradient(low = tl, high = th, guide = "none") + scale_size(range = c(1.5, 5), guide = "none") +
   labs(x = NULL, y = NULL, title = "Abundance") +
   theme_bw(base_size = 8) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(size = 8, hjust = 0.5))
-pR <- ggplot(dat, aes(x = total_len, y = Species, fill = rank_total)) + geom_col(width = 0.7) +
-  scale_fill_gradient(low = tl, high = th, name = "Total rank") + labs(x = "Total rank", y = NULL, title = "Total") +
-  theme_bw(base_size = 8) + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major.y = element_blank(), legend.position = "bottom", plot.title = element_text(size = 8, hjust = 0.5))
-combined <- pL + pN + pA + pR + plot_layout(widths = c(1.3, 1.9, 0.45, 1.3))
-ggsave(file.path(DIR_RES, "D_core_sp_selection_composite.pdf"), combined, width = 8.1, height = 4.6)
+combined <- pL + pA + pN + plot_layout(widths = c(1.3, 0.45, 1.9))
+ggsave(file.path(DIR_RES, "D_core_sp_selection_composite.pdf"), combined, width = 6.5, height = 4.6)
 
 write.csv(saving_info[, c("Species", "degree_stability", "degree_rank", "closeness_stability",
                           "closeness_rank", "betweenness_stability", "betweenness_rank",
-                          "rank_abundance", "diversity_contribute", "rank_total")],
+                          "rank_abundance", "diversity_contribute")],
           file.path(DIR_TAB, "Species_within_saving_module.csv"), row.names = FALSE)
 
 # Candidate species (positively contributing) for the network plot
