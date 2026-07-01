@@ -149,11 +149,12 @@ rp_gene <- rp_res %>% filter(!is.na(rs)) %>%
   group_by(gene) %>% slice_max(rs, n = 1, with_ties = FALSE) %>% ungroup() %>%
   mutate(padj = p.adjust(p, method = "BH"))
 concordant_genes <- rp_gene$gene[rp_gene$rs > 0.3 & rp_gene$padj < 0.05]
+protein_detected_genes <- rp_gene$gene  # genes quantified in the proteome (testable denominator)
 write.csv(rp_gene, file.path(DIR_TAB, "RNA_protein_concordant_genes.csv"), row.names = FALSE)
 
 #################
 # Circos lollipop
-# Per genus: % of its RNA-correlated genes that are RNA-protein concordant.
+# Per genus: % of its RNA-correlated genes *detected in the proteome* that are RNA-protein concordant.
 n_common <- length(samples_common)
 rna_sig  <- abs(rna_cor_mat) >= 0.3 & spearman_pval(rna_cor_mat, n_common) < 0.05
 rna_sig[is.na(rna_sig)] <- FALSE
@@ -161,10 +162,11 @@ overlap_df <- data.frame(
   genus     = rownames(rna_cor_mat),
   count     = sapply(rownames(rna_cor_mat), function(g)
     length(intersect(colnames(rna_cor_mat)[rna_sig[g, ]], concordant_genes))),
-  rna_total = rowSums(rna_sig),
+  rna_total = sapply(rownames(rna_cor_mat), function(g)
+    length(intersect(colnames(rna_cor_mat)[rna_sig[g, ]], protein_detected_genes))),
   stringsAsFactors = FALSE
 ) %>%
-  mutate(pct = ifelse(rna_total > 0, count / rna_total * 100, 0)) %>%
+  mutate(pct = ifelse(rna_total >= 5, count / rna_total * 100, NA_real_)) %>%
   .[match(top20_genera, .$genus), ]
 
 genera <- overlap_df$genus
@@ -176,8 +178,8 @@ genus_colors <- setNames(
   as.character(paletteer_d("khroma::discreterainbow")[c(10, 12:20, 23:27, 2, 4, 5, 7, 9)]),
   top20_genera
 )
-max_pct        <- ceiling(max(overlap_df$pct))
-high_overlap_g <- overlap_df$genus[overlap_df$pct > 10]
+max_pct        <- ceiling(max(overlap_df$pct, na.rm = TRUE))
+high_overlap_g <- overlap_df$genus[!is.na(overlap_df$pct) & overlap_df$pct > 10]
 
 pdf(file.path(DIR_RES, "Circos_genus_overlap_lollipop.pdf"), width = 7.5, height = 7.5)
 circos.clear()
@@ -204,6 +206,7 @@ circos.track(
       col = NA, border = ifelse(is_high, "#c0392b", "grey85"),
       lwd = ifelse(is_high, 2.5, 1)
     )
+    if (is.na(row$pct)) return(invisible())
     circos.segments(0.5, 0, 0.5, row$pct, lwd = 2.2, col = genus_colors[g])
     if (row$pct > 0)
       circos.points(0.5, row$pct, pch = 16,
@@ -281,12 +284,12 @@ prot_cor_sp <- calc_prot_cor(mtx_clr_sp, mtx_prot_log, samples_common)
 saveRDS(prot_cor_sp, file.path(DIR_RDS, "prot_species_protein_cor.rds"))
 
 # Per-species RNA-protein concordance: % of each species' significantly RNA-correlated
-# genes that are RNA-protein concordant (microbe-independent concordant_genes list).
+# genes *detected in the proteome* that are RNA-protein concordant (microbe-independent concordant_genes list).
 sp_rna_sig <- abs(rna_cor_sp) >= 0.3 & spearman_pval(rna_cor_sp, n_common) < 0.05
 sp_rna_sig[is.na(sp_rna_sig)] <- FALSE
 sp_concord_pct <- sapply(rownames(rna_cor_sp), function(sp) {
-  g <- colnames(rna_cor_sp)[sp_rna_sig[sp, ]]
-  if (length(g) == 0) return(0)
+  g <- intersect(colnames(rna_cor_sp)[sp_rna_sig[sp, ]], protein_detected_genes)
+  if (length(g) < 5) return(NA_real_)
   mean(g %in% concordant_genes) * 100
 })
 concord_col_sp <- colorRamp2(c(0, max(sp_concord_pct, na.rm = TRUE)), c("#FEE5D9", "#A50F15"))
@@ -342,6 +345,57 @@ gsea_results_sp <- lapply(setNames(rownames(rna_cor_sp), rownames(rna_cor_sp)), 
     mutate(species = sp)
 })
 saveRDS(gsea_results_sp, file.path(DIR_RDS, "gsea_correlated_sp.rds"))
+
+# ---------------------------------------------------------------------------
+# Ridge plot (EMT example): per-species distribution of the gene-level Spearman
+# correlations for one hallmark pathway's gene set. A right-shifted ridge means
+# that species' pathway genes are positively co-correlated => positive enrichment
+# (formal GSEA NES annotated per species).
+suppressMessages(library(ggridges))
+ridge_pw    <- "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION"
+ridge_genes <- intersect(hallmark_sets[[ridge_pw]], colnames(rna_cor_sp))
+
+# NES + padj per species for this pathway (single-pathway fgsea over ALL species)
+ridge_nes <- do.call(rbind, lapply(rownames(rna_cor_sp), function(sp) {
+  rv  <- sort(na.omit(rna_cor_sp[sp, ]), decreasing = TRUE)
+  res <- fgsea(pathways = hallmark_sets[ridge_pw], stats = rv,
+               minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0)
+  data.frame(species = sp, NES = res$NES, padj = res$padj)
+}))
+
+# long: every pathway gene's Spearman r, per species
+ridge_long <- do.call(rbind, lapply(rownames(rna_cor_sp), function(sp) {
+  data.frame(species = sp, r = as.numeric(rna_cor_sp[sp, ridge_genes]))
+}))
+ridge_long <- ridge_long[is.finite(ridge_long$r), ]
+
+ridge_med <- tapply(ridge_long$r, ridge_long$species, median)  # robust, never NA
+sp_ord    <- names(sort(ridge_med))                            # highest median r on top
+ridge_long$species <- factor(ridge_long$species, levels = sp_ord)
+ridge_nes <- ridge_nes[match(sp_ord, ridge_nes$species), ]
+ridge_nes$sig <- ifelse(!is.na(ridge_nes$padj) & ridge_nes$padj < 0.05, "*", "")
+nes_txt <- ifelse(is.na(ridge_nes$NES), "n/a",
+                  sprintf("%.2f%s", ridge_nes$NES, ridge_nes$sig))
+y_labs <- setNames(sprintf("italic('%s')~~'(NES %s)'",
+                           gsub("_", " ", sp_ord), nes_txt), sp_ord)
+
+p_ridge_emt <- ggplot(ridge_long, aes(x = r, y = species, fill = after_stat(x))) +
+  geom_density_ridges_gradient(scale = 2.2, rel_min_height = 0.01,
+                               linewidth = 0.25, colour = "grey30") +
+  scale_fill_gradient2(low = "#2b83ba", mid = "white", high = "#d7191c",
+                       midpoint = 0, name = "Spearman r") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50", linewidth = 0.3) +
+  scale_y_discrete(labels = function(x) parse(text = y_labs[x]),
+                   expand = expansion(add = c(0.2, 1.4))) +
+  labs(x = "Gene-level Spearman r (species vs EMT-pathway genes)", y = NULL,
+       title = "EMT (HALLMARK_EMT): per-species enrichment of correlated genes") +
+  theme_ridges(font_size = 9, grid = TRUE) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5),
+        legend.position = "right")
+
+ggsave(file.path(DIR_RES, "Ridge_EMT_species_gene_enrichment.pdf"),
+       p_ridge_emt, width = 7.2, height = 5.8)
+
 
 # ----------------------------------------------------------------------------
 # Hallmark GSEA stratified by tumour Shannon-diversity High vs Low
@@ -456,11 +510,7 @@ sp_genus    <- gsub("_.*", "", rownames(rna_mat_sp))
 sp_log2cpm  <- log2(rowMeans(mtx_cpm_sp_filt) + 1)
 abund_col_sp <- colorRamp2(range(sp_log2cpm), c("#e8f4f8", "#1a5276"))
 
-# Saving-module rank (rank_total from the imported species table) and
-# diversity High/Low enrichment (MaAsLin2 significant_results.tsv; value=High & coef>0 => enriched in High)
-sp_rank      <- setNames(target_sp$rank_total, target_sp$Species)
-rank_vals    <- sp_rank[rownames(rna_mat_sp)]
-rank_col_fun <- colorRamp2(range(sp_rank, na.rm = TRUE), c("#0C8599", "#79C9C4"))
+# Diversity High/Low enrichment (MaAsLin2 significant_results.tsv; value=High & coef>0 => enriched in High)
 
 hl_tab <- read.delim("/home/yzwang/data/project/AEG_seiri/results/F2_species/diversity_network/MaAsLin2_HighLow/significant_results.tsv")
 hl_tab <- hl_tab[hl_tab$metadata == "group", ]
@@ -469,7 +519,6 @@ div_coef_vals <- hl_coef[rownames(rna_mat_sp)]    # NA where species not signifi
 div_coef_col  <- colorRamp2(range(div_coef_vals, na.rm = TRUE), c("#EFEDF5", "#54278F"))  # sequential Purples
 
 prot_anno_sp <- rowAnnotation(
-  Rank = anno_simple(rank_vals, col = rank_col_fun, na_col = "grey90", width = unit(4, "mm")),
   Diversity_High = anno_simple(div_coef_vals, col = div_coef_col, na_col = "grey90", width = unit(4, "mm")),
   RNA_protein_concord = anno_simple(
     sp_concord_pct[rownames(rna_mat_sp)],
@@ -511,9 +560,6 @@ draw(ht_sp, annotation_legend_list = list(
   Legend(col_fun = abund_col_sp, title = "log2CPM",
          title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
          direction = "vertical"),
-  Legend(col_fun = rank_col_fun, title = "Saving-module rank",
-         title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
-         direction = "vertical"),
   Legend(col_fun = div_coef_col, title = "High vs Low (coef)",
          title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7),
          direction = "vertical")
@@ -521,13 +567,33 @@ draw(ht_sp, annotation_legend_list = list(
 dev.off()
 
 # For supplementary: showing genes affected
-categories <- c("Metabolism", "Cell Cycle", "Metastasis", "Immune")
+# Hallmark functional category (6 consolidated groups)
+.mkcat <- function(label, nm) setNames(rep(label, length(nm)), paste0("HALLMARK_", nm))
+hm_category <- c(
+  .mkcat("Immune & inflammation", c("ALLOGRAFT_REJECTION","COAGULATION","COMPLEMENT",
+    "INTERFERON_ALPHA_RESPONSE","INTERFERON_GAMMA_RESPONSE","IL6_JAK_STAT3_SIGNALING","INFLAMMATORY_RESPONSE")),
+  .mkcat("Signaling", c("ANDROGEN_RESPONSE","ESTROGEN_RESPONSE_EARLY","ESTROGEN_RESPONSE_LATE",
+    "IL2_STAT5_SIGNALING","KRAS_SIGNALING_UP","KRAS_SIGNALING_DN","MTORC1_SIGNALING","NOTCH_SIGNALING",
+    "PI3K_AKT_MTOR_SIGNALING","HEDGEHOG_SIGNALING","TGF_BETA_SIGNALING","TNFA_SIGNALING_VIA_NFKB","WNT_BETA_CATENIN_SIGNALING")),
+  .mkcat("Metabolism", c("ADIPOGENESIS","BILE_ACID_METABOLISM","CHOLESTEROL_HOMEOSTASIS",
+    "FATTY_ACID_METABOLISM","GLYCOLYSIS","HEME_METABOLISM","OXIDATIVE_PHOSPHORYLATION","XENOBIOTIC_METABOLISM")),
+  .mkcat("Proliferation & DNA", c("E2F_TARGETS","G2M_CHECKPOINT","MITOTIC_SPINDLE","MYC_TARGETS_V1",
+    "MYC_TARGETS_V2","P53_PATHWAY","DNA_REPAIR","UV_RESPONSE_DN","UV_RESPONSE_UP")),
+  .mkcat("Development & EMT", c("ANGIOGENESIS","EPITHELIAL_MESENCHYMAL_TRANSITION","MYOGENESIS",
+    "SPERMATOGENESIS","PANCREAS_BETA_CELLS")),
+  .mkcat("Cellular stress & structure", c("APOPTOSIS","HYPOXIA","PROTEIN_SECRETION","UNFOLDED_PROTEIN_RESPONSE",
+    "REACTIVE_OXYGEN_SPECIES_PATHWAY","APICAL_JUNCTION","APICAL_SURFACE","PEROXISOME"))
+)
+cat_levels <- c("Immune & inflammation","Signaling","Metabolism",
+                "Proliferation & DNA","Development & EMT","Cellular stress & structure")
+
+categories <- cat_levels
 species_levels <- rownames(rna_mat_sp_capped)
 cor_threshold  <- 0.3
 
 gene_cat <- data.frame(
   gene     = gene_use_sp,
-  category = as.character(col_split_vec),
+  category = hm_category[as.character(gene_primary_pw$pathway[match(gene_use_sp, gene_primary_pw$gene)])],
   stringsAsFactors = FALSE
 )
 
@@ -654,6 +720,7 @@ make_row <- function(cat_name, show_x_labels = TRUE, show_legend = FALSE) {
   p_dot + p_bar + plot_layout(widths = c(6, 1))
 }
 
+categories  <- intersect(categories, unique(na.omit(gene_cat$category)))  # keep only non-empty, in order
 row_panels <- lapply(categories, function(cat) make_row(cat))
 
 p_lgd <- ggplot() +
@@ -710,7 +777,7 @@ final <- wrap_plots(row_panels, ncol = 1) /
   wrap_elements(lgd_grob) +
   plot_layout(heights = c(rep(1, length(categories)), 0.12))
 
-pdf(file.path(DIR_RES, "Landscape_species_pathway_dotplot.pdf"), width = 18, height = 14)
+pdf(file.path(DIR_RES, "Landscape_species_pathway_dotplot.pdf"), width = 18, height = 3.5 * length(categories))
 print(final)
 dev.off()
 
@@ -783,6 +850,90 @@ n_path_kegg <- length(unique(df_plot_kegg$pw_label))
 ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_KEGG_cor.pdf"),
        p_rna_kegg, width = 12, height = max(8, n_path_kegg * 0.33 + 1.5), limitsize = FALSE)
 
+#####################################
+# All Hallmark gene sets - overview dotplot (significant pathways; species clustered; pathways grouped by 6 functional categories)
+hallmark_all_sets <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  select(gs_name, gene_symbol) %>%
+  { split(.$gene_symbol, .$gs_name) }
+
+# Run fGSEA per species (RNA-correlation ranking)
+set.seed(42)
+gsea_rna_hm <- bind_rows(lapply(rownames(rna_cor_sp), function(sp) {
+  rank_vec <- sort(na.omit(rna_cor_sp[sp, ]), decreasing = TRUE)
+  fgsea(pathways = hallmark_all_sets, stats = rank_vec,
+        minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0) %>%
+    mutate(species = sp)
+}))
+
+# Keep pathways significantly enriched (padj < 0.05 & |NES| > 1.5) in >= 2 species
+sig_pathways_hm <- gsea_rna_hm %>% filter(padj < 0.05 & abs(NES) > 1.5) %>% count(pathway) %>% filter(n >= 2) %>% pull(pathway)
+gsea_rna_hm <- gsea_rna_hm %>% filter(pathway %in% sig_pathways_hm)
+
+
+# Cluster species (x) and pathways (y) on the NES matrix (missing -> 0)
+nes_mat <- tapply(gsea_rna_hm$NES,
+                  list(as.character(gsea_rna_hm$pathway), as.character(gsea_rna_hm$species)),
+                  function(x) x[1])
+nes_mat[is.na(nes_mat)] <- 0
+hc_sp <- hclust(dist(t(nes_mat)), method = "ward.D2")   # species (x)
+hc_pw <- hclust(dist(nes_mat),    method = "ward.D2")   # pathways (y)
+row_ord_hm <- rownames(nes_mat)[hc_pw$order]
+col_ord_hm <- colnames(nes_mat)[hc_sp$order]
+
+nes_bound_hm <- max(abs(gsea_rna_hm$NES), na.rm = TRUE)
+hm_lab <- function(x) gsub("_", " ", tolower(gsub("^HALLMARK_", "", x)))
+
+df_plot_hm <- gsea_rna_hm %>%
+  mutate(
+    species  = factor(species, levels = col_ord_hm),
+    signif   = padj < 0.05 & abs(NES) > 1.5,
+    category = factor(hm_category[as.character(pathway)], levels = cat_levels),
+    pw_label = factor(hm_lab(as.character(pathway)), levels = hm_lab(row_ord_hm))
+  )
+
+p_rna_hm <- ggplot(df_plot_hm, aes(x = species, y = pw_label)) +
+  geom_point(aes(size = -log10(padj), color = NES, alpha = signif)) +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
+  scale_color_gradientn(
+    colors = rev(RColorBrewer::brewer.pal(11, "RdBu")),
+    limits = c(-nes_bound_hm, nes_bound_hm),
+    name   = "NES"
+  ) +
+  scale_size_continuous(
+    name  = expression(-log[10](p.adj)),
+    range = c(0.2, 3)
+  ) +
+  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.2), guide = "none") +
+  labs(x = NULL, y = NULL) +
+  theme_bw(base_size = 7) +
+  theme(
+    axis.text.x       = element_text(color = 1, angle = 90, hjust = 1, vjust = 0.5, size = 6),
+    axis.text.y       = element_text(color = 1, size = 6),
+    panel.grid.major  = element_line(color = "grey90", linewidth = 0.3),
+    panel.spacing     = unit(2, "pt"),
+    strip.background  = element_rect(fill = "grey92", color = NA),
+    strip.text.y      = element_text(angle = 0, size = 6, face = "bold"),
+    legend.position   = "right"
+  )
+
+# Species clustering dendrogram, placed on top and aligned to the clustered x-axis
+suppressMessages(library(patchwork))
+seg_sp <- dendextend::as.ggdend(as.dendrogram(hc_sp))$segments
+p_dendro_sp <- ggplot(seg_sp) +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend), linewidth = 0.3) +
+  scale_x_continuous(expand = expansion(add = 0.6)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
+  theme_void()
+
+combined_hm <- p_dendro_sp / p_rna_hm +
+  plot_layout(heights = c(0.12, 1)) +
+  plot_annotation(title = "GSEA Dotplot - Hallmark (RNA correlation)",
+                  theme = theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5)))
+
+n_path_hm <- length(unique(df_plot_hm$pw_label))
+ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_Hallmark_cor.pdf"),
+       combined_hm, width = 6, height = 7.5, limitsize = FALSE)
+
 ####################
 # Species Rs scatter
 rna_pval_sp <- spearman_pval(rna_cor_sp, n_common)
@@ -822,7 +973,7 @@ label_df_box <- data.frame(
   concord = sp_concord_pct[sp_order],
   stringsAsFactors = FALSE
 )
-label_df_box$txt_col <- ifelse(label_df_box$concord > 0.5 * loll_max, "white", "grey15")
+label_df_box$txt_col <- "black"
 label_df_box$abbr <- sapply(strsplit(as.character(sp_order), "_"),
                             function(pp) paste0(substr(pp[1], 1, 1), ". ", paste(pp[-1], collapse = " ")))
 
@@ -837,7 +988,7 @@ p_multi_volc <- ggplot() +
   scale_fill_identity() +
   geom_point(data = filter(sig_df, sig != "ns"),
              aes(x = species, y = pmax(pmin(Rs, y_cap), -y_cap), color = sig),
-             position = jitter_pos, size = 1.0, alpha = 0.7) +
+             position = jitter_pos, size = 0.5, alpha = 0.7) +
   scale_color_manual(values = c("Pos" = "#c0392b", "Neg" = "#2980b9"), name = NULL) +
   geom_hline(yintercept = 0, linewidth = 0.3, color = "grey40") +
   geom_hline(yintercept = c(0.3, -0.3), linewidth = 0.3, color = "grey60", linetype = "dashed") +
@@ -854,11 +1005,12 @@ p_multi_volc <- ggplot() +
             height = 0.08, width = 0.9, color = "white", linewidth = 0.3,
             inherit.aes = FALSE) +
   scale_fill_gradient(low = "#FEE5D9", high = "#A50F15",
-                      name = "RNA-protein concordant (%)", limits = c(0, NA)) +
+                      name = "RNA-protein\nconcordant (%)", limits = c(0, NA)) +
   ggnewscale::new_scale_color() +
   geom_text(data = label_df_box,
             aes(x = species, y = 0, label = abbr, color = txt_col),
-            size = 3.0, fontface = "italic", inherit.aes = FALSE, show.legend = FALSE) +
+            size = 3.0, fontface = "italic", angle = 90,
+            inherit.aes = FALSE, show.legend = FALSE) +
   scale_color_identity() +
   scale_y_continuous(limits = c(-y_cap * 1.35, y_cap * 1.35),
                      breaks = seq(-0.6, 0.6, 0.3)) +
@@ -873,8 +1025,8 @@ p_multi_volc <- ggplot() +
     legend.key.size = unit(0.4, "cm"), legend.text = element_text(size = 9)
   )
 
-ggsave(file.path(DIR_RES, "Lollipop_species_Rs_genes.pdf"),
-       p_multi_volc, width = 0.9 * max(14, length(sp_order) * 0.9), height = 7)
+ggsave(file.path(DIR_RES, "Strip_species_Rs_genes.pdf"),
+       p_multi_volc, width = 7, height = 5)
 
 ########
 # GENIE3
@@ -1031,8 +1183,6 @@ ribbons <- lapply(sp_order_s, function(sp) {
 x_range <- range(c(x_gn, x_sp, x_g))
 
 p_sankey <- ggplot() +
-  geom_polygon(data = ribbons,
-               aes(x, y, group = species, fill = fill), alpha = 0.3, color = NA) +
   scale_fill_identity() +
   geom_segment(data = top5_per_sp,
                aes(x = x_sp_coord, y = y_species, xend = x_gn_coord, yend = y_gene,
@@ -1041,11 +1191,6 @@ p_sankey <- ggplot() +
   scale_color_distiller(palette = "RdBu", direction = -1,
                         limits = c(-1, 1) * max(abs(top5_per_sp$spearman_r), na.rm = TRUE),
                         name = "Spearman r") +
-  geom_tile(data = df_genus,
-            aes(x, y, fill = genus_colors[label]),
-            width = 1.5, height = 0.12, color = "white") +
-  geom_text(data = df_genus,
-            aes(x, y = y + 0.1, label = label), vjust = 0, size = 3, fontface = "bold") +
   geom_tile(data = df_species,
             aes(x, y, fill = genus_colors[genus]),
             width = 0.6, height = 0.1, alpha = 0.85, color = "white") +
@@ -1061,10 +1206,10 @@ p_sankey <- ggplot() +
   geom_text(data = df_gene,
             aes(x, y = y - 0.08, label = gene),
             vjust = .5, size = 2.2, fontface = "italic", angle = 90, hjust = 1) +
-  annotate("text", x = min(x_range) - 1, y = c(y_genus, y_species, y_gene),
-           label = c("Genus", "Species", "Gene"), fontface = "bold", size = 3.5, hjust = 1) +
+  annotate("text", x = min(x_range) - 1, y = c(y_species, y_gene),
+           label = c("Species", "Gene"), fontface = "bold", size = 3.5, hjust = 1) +
   coord_cartesian(xlim = c(min(x_range) - 2, max(x_range) + 1),
-                  ylim = c(y_gene - 0.8, y_genus + 0.5)) +
+                  ylim = c(y_gene - 0.8, y_species + 0.35)) +
   theme_void(base_size = 11) +
   theme(legend.position = "right",
         legend.title    = element_text(size = 9, face = "bold"),
@@ -1227,7 +1372,7 @@ for (meth in names(immune_mat)) {
     c(-0.6, -0.3, 0, 0.3, 0.6),
     c("#2166ac", "#92c5de", "white", "#f4a582", "#b2182b")
   )
-  pdf(file.path(DIR_RES,  paste0("Heatmap_", meth, "_correlated_sp.pdf")), width = 8, height = 4)
+  pdf(file.path(DIR_RES,  paste0("Heatmap_", meth, "_correlated_sp.pdf")), width = 5.2, height = 4)
   draw(Heatmap(
     t(cor_ht_target),
     name              = "Spearman r",

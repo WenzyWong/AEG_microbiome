@@ -749,12 +749,12 @@ elnet_sp <- elnet_sp[elnet_sp %in% tumour_module_sp]
 x_raw <- as.matrix(log2(mtx_cpm[elnet_sp, names(shan_tumour)] + 1))
 x_clr <- apply(x_raw, 2, function(v) clr(v)) %>% t(.)
 
-# Elastic Net
+# Ridge regression
 set.seed(42)  # reproducible CV folds, independent of upstream RNG
 elnet_fit <- cv.glmnet(
   x = x_clr,
   y = shan_tumour,
-  alpha = 0.5,
+  alpha = 0,
   family = "gaussian",
   standardize = TRUE
 )
@@ -786,7 +786,7 @@ lollipop_contribution <- function(df, fname, height, width = 5.5) {
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
     geom_segment(aes(x = 0, xend = coef, yend = species), linewidth = 0.6) +
     scale_colour_manual(values = mod_cols, name = "Normal module") +
-    labs(x = "Elastic net coefficient (contribution to Shannon diversity)", y = NULL) +
+    labs(x = "Ridge coefficient (contribution to Shannon diversity)", y = NULL) +
     theme_bw(base_size = 9) +
     theme(panel.grid.major.y = element_blank(), legend.position = "top")
   if (any(df[["coef"]] == 0)) {
@@ -853,7 +853,7 @@ netlabs <- c("Degree stab.", "Degree", "Closeness stab.", "Closeness", "Betweenn
 pL <- ggplot(loll, aes(x = coef, y = Species, colour = normal_module)) +
   geom_segment(aes(x = 0, xend = coef, yend = Species), linewidth = 0.6) + geom_point(size = 2.4) +
   scale_colour_manual(values = mod_cols, name = "Normal module") + scale_x_reverse() + scale_y_discrete(labels = short_map) +
-  labs(x = "Elnet coef", y = NULL, title = "Diversity contribution") +
+  labs(x = "Ridge coef", y = NULL, title = "Diversity contribution") +
   theme_bw(base_size = 8) + theme(panel.grid.major.y = element_blank(), legend.position = "bottom", plot.title = element_text(size = 8, hjust = 0.5))
 pN <- ggplot(bubN, aes(x = attr, y = Species)) + geom_point(aes(size = sz, colour = rank)) +
   scale_colour_gradient(low = tl, high = th, name = "Rank") + scale_size(range = c(1.5, 5), guide = "none") +
@@ -884,18 +884,24 @@ ggplot() +
              aes(X1, X2, fill = Rank2, size = igraph.degree)) +
   scale_fill_manual(values = paletteer_d("ggsci::nrc_npg")) +
   facet_wrap(.~ label, scales = "free_y", nrow = 1) +
-  geom_text(
+  ggrepel::geom_text_repel(
     data = node %>%
       mutate(standard_name = paste0(gsub("g__", "", Rank6), "_",
                                     gsub("s__", "", Rank7)),
              short_name = paste0(toupper(substr(gsub("g__", "", Rank6), 1, 1)),
                                  ".", gsub("s__", "", Rank7))) %>%
       filter(standard_name %in% species_list),
-    aes(X1, X2, label = short_name)
+    aes(X1, X2, label = short_name),
+    size = 2.6, fontface = "italic",
+    max.overlaps = Inf, force = 8, force_pull = 0.4,
+    box.padding = 0.8, point.padding = 0.3,
+    min.segment.length = 0, segment.size = 0.25,
+    segment.color = "grey45", segment.alpha = 0.85,
+    seed = 42
   ) +
   scale_size(range = c(0.8, 5)) +
-  scale_x_continuous(breaks = NULL) +
-  scale_y_continuous(breaks = NULL) +
+  scale_x_continuous(breaks = NULL, expand = expansion(mult = 0.15)) +
+  scale_y_continuous(breaks = NULL, expand = expansion(mult = 0.12)) +
   theme(panel.background = element_blank(),
         plot.title = element_text(hjust = 0.5),
         axis.title.x = element_blank(),
