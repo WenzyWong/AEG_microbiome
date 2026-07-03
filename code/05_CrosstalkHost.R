@@ -26,6 +26,7 @@ library(GENIE3)
 library(foreach)
 library(doParallel)
 library(fgsea)
+library(broom)
 library(immunedeconv)
 
 DIR_RDS <- "/data/yzwang/project/AEG_seiri/RDS/"
@@ -781,158 +782,241 @@ pdf(file.path(DIR_RES, "Landscape_species_pathway_dotplot.pdf"), width = 18, hei
 print(final)
 dev.off()
 
-#####################################
-# KEGG gene sets (gene symbol format)
-kegg_sets <- msigdbr(species = "Homo sapiens", category = "C2", subcollection = "CP:KEGG_MEDICUS") %>%
-  select(gs_name, gene_symbol) %>%
-  { split(.$gene_symbol, .$gs_name) }
+####################################################
+# Integrated RNA / protein / phosphorylation crosstalk
+# For each saving-module species, on the pathways its gene-correlation
+# ranking is enriched for (GSEA above, both directions), summarise per
+# pathway whether the corresponding proteins change at the protein level
+# and the phosphosite level with that species' abundance (06-style
+# logistic regression of feature presence ~ species relative abundance).
+# Bubble glyph: left half-disc = RNA (NES / -log10 padj); right half is
+# split into an upper wedge (protein) and a lower wedge (phosphorylation),
+# each = mean log2(OR) / #significant features, with a small left-right gap.
+# Replaces the standalone RNA-only GSEA dotplots.
 
-# Run fGSEA per species
-gsea_rna_kegg <- bind_rows(lapply(rownames(rna_cor_sp), function(sp) {
-  rank_vec <- sort(na.omit(rna_cor_sp[sp, ]), decreasing = TRUE)
-  
-  fgsea(pathways = kegg_sets, stats = rank_vec,
-        minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0) %>%
-    mutate(species = sp)
-}))
-sig_pathways <- gsea_rna_kegg %>%
-  filter(padj < 0.05) %>%
-  pull(pathway) %>% unique()
-gsea_rna_kegg <- gsea_rna_kegg %>% filter(pathway %in% sig_pathways)
-
-# Pathway order by significant NES direction count
-path_order_kegg <- gsea_rna_kegg %>%
-  mutate(sig_pos = padj < 0.05 & NES > 0,
-         sig_neg = padj < 0.05 & NES < 0) %>%
-  group_by(pathway) %>%
-  summarise(n_pos = sum(sig_pos), n_neg = sum(sig_neg),
-            n_sig = n_pos + n_neg, .groups = "drop") %>%
-  arrange(n_pos - n_neg, n_sig) %>%
-  pull(pathway)
-
-nes_bound_kegg <- max(abs(gsea_rna_kegg$NES), na.rm = TRUE)
-
-df_plot_kegg <- gsea_rna_kegg %>%
-  mutate(
-    pathway = factor(pathway, levels = path_order_kegg),
-    species = factor(species, levels = rownames(rna_cor_sp)),
-    signif  = padj < 0.05,
-    pw_label = gsub("^KEGG_MEDICUS_|^KEGG_MEDICUS_REFERENCE_", "", as.character(pathway)) %>%
-      tolower() %>% gsub("_", " ", .)
-  )
-
-p_rna_kegg <- ggplot(df_plot_kegg,
-                     aes(x = species, y = reorder(pw_label, as.integer(pathway)))) +
-  geom_point(aes(size = -log10(padj), color = NES, alpha = signif)) +
-  scale_color_gradientn(
-    colors = c("#3366CC", "white", "#CC3333"),
-    limits = c(-nes_bound_kegg, nes_bound_kegg),
-    name   = "NES"
-  ) +
-  scale_size_continuous(
-    name  = expression(-log[10](p.adj)),
-    range = c(1, 5)
-  ) +
-  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.2), guide = "none") +
-  labs(x = NULL, y = NULL,
-       title = "GSEA Dotplot - KEGG (RNA correlation)") +
-  theme_bw(base_size = 10) +
-  theme(
-    axis.text.x      = element_text(color = 1, angle = 90, hjust = 1, vjust = 0.5),
-    axis.text.y      = element_text(color = 1),
-    panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
-    plot.title       = element_text(face = "bold", size = 12, hjust = 0.5),
-    legend.position  = "right"
-  )
-
-# Height scales with the number of pathways so bubbles do not overlap
-n_path_kegg <- length(unique(df_plot_kegg$pw_label))
-ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_KEGG_cor.pdf"),
-       p_rna_kegg, width = 12, height = max(8, n_path_kegg * 0.33 + 1.5), limitsize = FALSE)
-
-#####################################
-# All Hallmark gene sets - overview dotplot (significant pathways; species clustered; pathways grouped by 6 functional categories)
+# -- pathway gene sets (full Hallmark + KEGG), minus dropped pathways --
+drop_pathways <- c("HALLMARK_SPERMATOGENESIS", "HALLMARK_MYOGENESIS", "HALLMARK_ANDROGEN_RESPONSE")
 hallmark_all_sets <- msigdbr(species = "Homo sapiens", category = "H") %>%
-  select(gs_name, gene_symbol) %>%
-  { split(.$gene_symbol, .$gs_name) }
+  select(gs_name, gene_symbol) %>% { split(.$gene_symbol, .$gs_name) }
+hallmark_all_sets <- hallmark_all_sets[setdiff(names(hallmark_all_sets), drop_pathways)]
+kegg_sets <- msigdbr(species = "Homo sapiens", category = "C2", subcollection = "CP:KEGG_MEDICUS") %>%
+  select(gs_name, gene_symbol) %>% { split(.$gene_symbol, .$gs_name) }
+set_list <- list(Hallmark = hallmark_all_sets, KEGG = kegg_sets)
 
-# Run fGSEA per species (RNA-correlation ranking)
+sp_list <- intersect(intersect(target_sp$Species, rownames(rna_cor_sp)), rownames(mtx_cpm_sp))
+
+# -- per-species enrichment (both resources), full NES/padj table --
 set.seed(42)
-gsea_rna_hm <- bind_rows(lapply(rownames(rna_cor_sp), function(sp) {
+gsea_full <- map_dfr(sp_list, function(sp) {
   rank_vec <- sort(na.omit(rna_cor_sp[sp, ]), decreasing = TRUE)
-  fgsea(pathways = hallmark_all_sets, stats = rank_vec,
-        minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0) %>%
-    mutate(species = sp)
-}))
+  map_dfr(names(set_list), function(res_name) {
+    fgsea(pathways = set_list[[res_name]], stats = rank_vec,
+          minSize = 10, maxSize = 500, nPermSimple = 1000, eps = 0) %>%
+      transmute(species = sp, resource = res_name, pathway, NES, padj)
+  })
+})
+saveRDS(gsea_full, file.path(DIR_RDS, "crosstalk_gsea_full.rds"))
 
-# Keep pathways significantly enriched (padj < 0.05 & |NES| > 1.5) in >= 2 species
-sig_pathways_hm <- gsea_rna_hm %>% filter(padj < 0.05 & abs(NES) > 1.5) %>% count(pathway) %>% filter(n >= 2) %>% pull(pathway)
-gsea_rna_hm <- gsea_rna_hm %>% filter(pathway %in% sig_pathways_hm)
+enrich_sig  <- gsea_full %>% filter(padj < 0.05)
+enrich_long <- map_dfr(seq_len(nrow(enrich_sig)), function(i) {
+  r <- enrich_sig[i, ]
+  data.frame(species = r$species, resource = r$resource, pathway = r$pathway,
+             gene = set_list[[r$resource]][[r$pathway]], stringsAsFactors = FALSE)
+})
 
+# -- phosphoproteome detection (reuse 06) --
+phospho <- readRDS(file.path(DIR_RDS, "Phosphoproteome_human_preprocessed.rds"))
+common_tumour <- intersect(grep("^C", colnames(phospho), value = TRUE),
+                           grep("^C", colnames(mtx_cpm_sp), value = TRUE))
+phos_tumour <- phospho[, common_tumour] %>% filter(rowMeans(.) != min(phospho))
+phos_tumour <- phos_tumour[!grepl("^-", rownames(phos_tumour)), ]
+phos_detect <- phos_tumour %>% as.data.frame() %>%
+  mutate(feature = rownames(.)) %>%
+  pivot_longer(-feature, names_to = "sample", values_to = "intensity") %>%
+  mutate(present = as.integer(intensity > 3.891872))
+phos_detect_f <- phos_detect %>% group_by(feature) %>%
+  mutate(prop_present = mean(present)) %>% ungroup() %>%
+  filter(prop_present > 0.1, prop_present < 0.9) %>% select(-prop_present)
+phos_feat_gene <- data.frame(feature = unique(phos_detect_f$feature), stringsAsFactors = FALSE) %>%
+  mutate(gene = sub("_.*$", "", feature))
 
-# Cluster species (x) and pathways (y) on the NES matrix (missing -> 0)
-nes_mat <- tapply(gsea_rna_hm$NES,
-                  list(as.character(gsea_rna_hm$pathway), as.character(gsea_rna_hm$species)),
-                  function(x) x[1])
-nes_mat[is.na(nes_mat)] <- 0
-hc_sp <- hclust(dist(t(nes_mat)), method = "ward.D2")   # species (x)
-hc_pw <- hclust(dist(nes_mat),    method = "ward.D2")   # pathways (y)
-row_ord_hm <- rownames(nes_mat)[hc_pw$order]
-col_ord_hm <- colnames(nes_mat)[hc_sp$order]
+# -- proteome detection (same logistic scheme; present = protein detected) --
+prot_ids    <- mtx_hpro$Protein_group
+prot_tumour <- intersect(grep("^C", colnames(mtx_hpro), value = TRUE),
+                         grep("^C", colnames(mtx_cpm_sp), value = TRUE))
+prot_num <- as.matrix(mutate(mtx_hpro[, prot_tumour], across(everything(), as.numeric)))
+rownames(prot_num) <- prot_ids
+prot_present <- matrix(as.integer(!is.na(prot_num) & prot_num > 0),
+                       nrow = nrow(prot_num), dimnames = dimnames(prot_num))
+prot_sym_map <- setNames(trimws(sub(";.*", "", mtx_hpro$Gene_names)), prot_ids)
+prot_detect <- as.data.frame(prot_present) %>%
+  mutate(feature = rownames(prot_present)) %>%
+  pivot_longer(-feature, names_to = "sample", values_to = "present")
+prot_detect_f <- prot_detect %>% group_by(feature) %>%
+  mutate(prop_present = mean(present)) %>% ungroup() %>%
+  filter(prop_present > 0.1, prop_present < 0.9) %>% select(-prop_present)
+prot_feat_gene <- data.frame(feature = unique(prot_detect_f$feature), stringsAsFactors = FALSE) %>%
+  mutate(gene = prot_sym_map[feature])
 
-nes_bound_hm <- max(abs(gsea_rna_hm$NES), na.rm = TRUE)
-hm_lab <- function(x) gsub("_", " ", tolower(gsub("^HALLMARK_", "", x)))
+# -- species-specific logistic regression (present ~ abundance) --
+run_logit <- function(detect_long, samples, sp, feats) {
+  if (length(feats) == 0) return(NULL)
+  abund <- data.frame(sample = samples,
+                      abundance = as.numeric(mtx_cpm_sp[sp, samples]) / 1e+4)
+  res <- detect_long %>% filter(feature %in% feats) %>%
+    left_join(abund, by = "sample") %>%
+    group_by(feature) %>% nest() %>%
+    mutate(fit = map(data, ~ tryCatch(glm(present ~ abundance, data = .x, family = binomial),
+                                      error = function(e) NULL))) %>%
+    filter(!map_lgl(fit, is.null)) %>%
+    mutate(converged = map_lgl(fit, ~ .$converged), tidied = map(fit, broom::tidy)) %>%
+    filter(converged) %>% unnest(tidied) %>% filter(term == "abundance") %>% ungroup()
+  if (nrow(res) == 0) return(NULL)
+  res %>% mutate(OR = exp(estimate), padj = p.adjust(p.value, method = "BH"), species = sp) %>%
+    select(species, feature, estimate, OR, p.value, padj)
+}
 
-df_plot_hm <- gsea_rna_hm %>%
-  mutate(
-    species  = factor(species, levels = col_ord_hm),
-    signif   = padj < 0.05 & abs(NES) > 1.5,
-    category = factor(hm_category[as.character(pathway)], levels = cat_levels),
-    pw_label = factor(hm_lab(as.character(pathway)), levels = hm_lab(row_ord_hm))
-  )
+phos_logit <- map_dfr(sp_list, function(sp) {
+  genes_sp <- unique(enrich_long$gene[enrich_long$species == sp])
+  run_logit(phos_detect_f, common_tumour, sp,
+            phos_feat_gene$feature[phos_feat_gene$gene %in% genes_sp])
+}) %>% mutate(gene = sub("_.*$", "", feature), log2OR = estimate / log(2))
 
-p_rna_hm <- ggplot(df_plot_hm, aes(x = species, y = pw_label)) +
-  geom_point(aes(size = -log10(padj), color = NES, alpha = signif)) +
-  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
-  scale_color_gradientn(
-    colors = rev(RColorBrewer::brewer.pal(11, "RdBu")),
-    limits = c(-nes_bound_hm, nes_bound_hm),
-    name   = "NES"
-  ) +
-  scale_size_continuous(
-    name  = expression(-log[10](p.adj)),
-    range = c(0.2, 3)
-  ) +
-  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.2), guide = "none") +
-  labs(x = NULL, y = NULL) +
-  theme_bw(base_size = 7) +
-  theme(
-    axis.text.x       = element_text(color = 1, angle = 90, hjust = 1, vjust = 0.5, size = 6),
-    axis.text.y       = element_text(color = 1, size = 6),
-    panel.grid.major  = element_line(color = "grey90", linewidth = 0.3),
-    panel.spacing     = unit(2, "pt"),
-    strip.background  = element_rect(fill = "grey92", color = NA),
-    strip.text.y      = element_text(angle = 0, size = 6, face = "bold"),
-    legend.position   = "right"
-  )
+prot_logit <- map_dfr(sp_list, function(sp) {
+  genes_sp <- unique(enrich_long$gene[enrich_long$species == sp])
+  run_logit(prot_detect_f, prot_tumour, sp,
+            prot_feat_gene$feature[prot_feat_gene$gene %in% genes_sp])
+}) %>% mutate(gene = prot_sym_map[feature], log2OR = estimate / log(2))
 
-# Species clustering dendrogram, placed on top and aligned to the clustered x-axis
-suppressMessages(library(patchwork))
-seg_sp <- dendextend::as.ggdend(as.dendrogram(hc_sp))$segments
-p_dendro_sp <- ggplot(seg_sp) +
-  geom_segment(aes(x = x, y = y, xend = xend, yend = yend), linewidth = 0.3) +
-  scale_x_continuous(expand = expansion(add = 0.6)) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
-  theme_void()
+write.csv(phos_logit, file.path(DIR_TAB, "Crosstalk_phospho_logit_allSp.csv"), row.names = FALSE)
+write.csv(prot_logit, file.path(DIR_TAB, "Crosstalk_protein_logit_allSp.csv"), row.names = FALSE)
 
-combined_hm <- p_dendro_sp / p_rna_hm +
-  plot_layout(heights = c(0.12, 1)) +
-  plot_annotation(title = "GSEA Dotplot - Hallmark (RNA correlation)",
-                  theme = theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5)))
+# -- per (species, pathway) summaries --
+summarise_mod <- function(logit_df) {
+  logit_df %>%
+    inner_join(distinct(enrich_long, species, resource, pathway, gene),
+               by = c("species", "gene"), relationship = "many-to-many") %>%
+    group_by(resource, species, pathway) %>%
+    summarise(n_sites = n_distinct(feature),
+              n_sig = n_distinct(feature[p.value < 0.05]),
+              mean_signed = ifelse(n_sig > 0, mean(log2OR[p.value < 0.05]), NA_real_),
+              .groups = "drop") %>%
+    filter(n_sites >= 3)
+}
+phos_summary <- summarise_mod(phos_logit)
+prot_summary <- summarise_mod(prot_logit)
+write.csv(phos_summary, file.path(DIR_TAB, "Crosstalk_phospho_species_summary.csv"), row.names = FALSE)
+write.csv(prot_summary, file.path(DIR_TAB, "Crosstalk_protein_species_summary.csv"), row.names = FALSE)
 
-n_path_hm <- length(unique(df_plot_hm$pw_label))
-ggsave(file.path(DIR_RES, "Dotplot_GSEA_RNA_Hallmark_cor.pdf"),
-       combined_hm, width = 6, height = 7.5, limitsize = FALSE)
+# -- integrated split-bubble heatmap (RNA left; protein top-right; phospho bottom-right) --
+clean_pw <- function(x, res) {
+  if (res == "Hallmark") gsub("_", " ", tolower(gsub("^HALLMARK_", "", x)))
+  else gsub("_", " ", tolower(gsub("^KEGG_MEDICUS_|^KEGG_MEDICUS_REFERENCE_", "", x)))
+}
+to_mat <- function(df, val, rows, cols) {
+  m <- matrix(NA_real_, length(rows), length(cols), dimnames = list(rows, cols))
+  idx <- cbind(match(df$pathway, rows), match(df$species, cols))
+  ok <- !is.na(idx[, 1]) & !is.na(idx[, 2]); m[idx[ok, , drop = FALSE]] <- df[[val]][ok]; m
+}
+# half-disc (round via mm radius), side = "left" (RNA) / "right" (phospho)
+draw_half <- function(x, y, r_mm, side, fill) {
+  theta <- if (side == "left") seq(pi/2, 3*pi/2, length.out = 50)
+           else                seq(-pi/2, pi/2, length.out = 50)
+  grid.polygon(x = x + unit(r_mm * cos(theta), "mm"), y = y + unit(r_mm * sin(theta), "mm"),
+               gp = gpar(fill = fill, col = NA))
+}
+
+make_integrated <- function(res_name, gsea_bb, use_split, row_order = NULL, file, width, height) {
+  species_all <- sort(unique(gsea_bb$species)); rows_pw <- unique(gsea_bb$pathway)
+  nes_mat  <- to_mat(gsea_bb, "NES",  rows_pw, species_all)
+  padj_mat <- to_mat(gsea_bb, "padj", rows_pw, species_all)
+  pho <- phos_summary %>% filter(resource == res_name, pathway %in% rows_pw, n_sig > 0)
+  phos_nsig_mat <- to_mat(pho, "n_sig", rows_pw, species_all)
+  phos_mlog_mat <- to_mat(pho, "mean_signed", rows_pw, species_all)
+
+  mat_main <- nes_mat; mat_main[is.na(mat_main)] <- 0
+  nes_b    <- max(abs(nes_mat), na.rm = TRUE)
+  lor_b    <- max(abs(pho$mean_signed), na.rm = TRUE)
+  rna_cap  <- max(-log10(padj_mat[is.finite(padj_mat)]), na.rm = TRUE)
+  feat_max <- max(pho$n_sig, na.rm = TRUE)
+  r_lo <- 1.1; r_hi <- 2.6
+  rna_r_val  <- function(v) r_lo + (r_hi - r_lo) * pmin(v, rna_cap)  / rna_cap
+  feat_r_val <- function(v) r_lo + (r_hi - r_lo) * pmin(v, feat_max) / feat_max
+  rna_col_fun  <- colorRamp2(seq(-nes_b, nes_b, length.out = 11), rev(RColorBrewer::brewer.pal(11, "RdBu")))
+  phos_col_fun <- colorRamp2(seq(-lor_b, lor_b, length.out = 11), rev(RColorBrewer::brewer.pal(11, "RdBu")))
+
+  cell_fun <- function(j, i, x, y, width, height, fill) {
+    rn <- rownames(mat_main)[i]; cn <- colnames(mat_main)[j]
+    padj <- padj_mat[rn, cn]
+    if (is.finite(padj) && padj < 0.05) {                       # RNA (left), significant only
+      v <- -log10(padj); if (!is.finite(v)) v <- rna_cap
+      draw_half(x, y, rna_r_val(v), "left", rna_col_fun(nes_mat[rn, cn]))
+    }
+    hn <- phos_nsig_mat[rn, cn]                                 # phospho (right)
+    if (is.finite(hn) && hn > 0)
+      draw_half(x, y, feat_r_val(hn), "right", phos_col_fun(phos_mlog_mat[rn, cn]))
+  }
+
+  ht_args <- list(
+    matrix = mat_main, col = rna_col_fun, rect_gp = gpar(col = "grey92", fill = NA),
+    cell_fun = cell_fun, show_heatmap_legend = FALSE,
+    row_labels = clean_pw(rownames(mat_main), res_name), row_names_gp = gpar(fontsize = 6),
+    column_names_gp = gpar(fontsize = 7, fontface = "italic"), column_names_rot = 90,
+    width = ncol(mat_main) * unit(6.5, "mm"), height = nrow(mat_main) * unit(6, "mm"),
+    column_title = paste0("RNA (left) vs phosphorylation (right) - ", res_name))
+  if (use_split) {
+    ht_args$row_split <- factor(hm_category[rownames(mat_main)], levels = cat_levels)
+    ht_args$cluster_rows <- TRUE
+    ht_args$row_title_gp <- gpar(fontsize = 7, fontface = "bold"); ht_args$row_title_rot <- 0
+  } else { ht_args$cluster_rows <- FALSE; ht_args$row_order <- row_order }
+  ht <- do.call(Heatmap, ht_args)
+
+  rna_vals  <- pretty(c(-log10(0.05), rna_cap), 3); rna_vals <- rna_vals[rna_vals >= 1 & rna_vals <= rna_cap]
+  feat_vals <- pretty(c(1, feat_max), 3); feat_vals <- feat_vals[feat_vals > 0 & feat_vals <= feat_max]
+  lgd_list <- list(
+    Legend(col_fun = rna_col_fun, title = "RNA NES",
+           title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)),
+    Legend(col_fun = phos_col_fun, title = "Phospho mean log2(OR)",
+           title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)),
+    Legend(title = "RNA -log10(padj)", at = rna_vals, labels = as.character(rna_vals),
+           type = "points", pch = 16, size = unit(2 * rna_r_val(rna_vals), "mm"),
+           legend_gp = gpar(col = "grey40"), background = "white",
+           title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)),
+    Legend(title = "# sig phosphosites", at = feat_vals, labels = as.character(feat_vals),
+           type = "points", pch = 16, size = unit(2 * feat_r_val(feat_vals), "mm"),
+           legend_gp = gpar(col = "grey40"), background = "white",
+           title_gp = gpar(fontsize = 8, fontface = "bold"), labels_gp = gpar(fontsize = 7)))
+
+  pdf(file, width = width, height = height)
+  draw(ht, annotation_legend_list = lgd_list, annotation_legend_side = "right")
+  dev.off()
+}
+
+# Hallmark backbone: sig (padj<0.05 & |NES|>1.5) in >= 2 species
+gsea_hm <- gsea_full %>% filter(resource == "Hallmark")
+sig_hm  <- gsea_hm %>% filter(padj < 0.05 & abs(NES) > 1.5) %>% count(pathway) %>% filter(n >= 2) %>% pull(pathway)
+gsea_hm <- gsea_hm %>% filter(pathway %in% sig_hm, pathway %in% names(hm_category))
+if (length(unique(gsea_hm$pathway)) > 0)
+  make_integrated("Hallmark", gsea_hm, use_split = TRUE,
+                  file = file.path(DIR_RES, "Split_Hallmark_RNA_phospho.pdf"),
+                  width = 8.5, height = max(6, length(unique(gsea_hm$pathway)) * 0.24 + 3))
+
+# KEGG backbone: sig (padj<0.05) in >= 1 species; ordered by net sig direction
+gsea_kg <- gsea_full %>% filter(resource == "KEGG")
+sig_kg  <- gsea_kg %>% filter(padj < 0.05) %>% pull(pathway) %>% unique()
+gsea_kg <- gsea_kg %>% filter(pathway %in% sig_kg)
+if (length(unique(gsea_kg$pathway)) > 0) {
+  path_order_kg <- gsea_kg %>%
+    mutate(sig_pos = padj < 0.05 & NES > 0, sig_neg = padj < 0.05 & NES < 0) %>%
+    group_by(pathway) %>%
+    summarise(n_pos = sum(sig_pos), n_neg = sum(sig_neg), n_sig = n_pos + n_neg, .groups = "drop") %>%
+    arrange(n_pos - n_neg, n_sig) %>% pull(pathway)
+  kg_rows <- unique(gsea_kg$pathway)
+  make_integrated("KEGG", gsea_kg, use_split = FALSE, row_order = match(path_order_kg, kg_rows),
+                  file = file.path(DIR_RES, "Split_KEGG_RNA_phospho.pdf"),
+                  width = 9.5, height = max(6, length(kg_rows) * 0.24 + 3))
+}
+
 
 ####################
 # Species Rs scatter
