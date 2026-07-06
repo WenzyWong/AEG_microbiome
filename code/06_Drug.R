@@ -171,15 +171,15 @@ build_top_anno <- function(R, P, sp_cols, show_legend = TRUE) {
     sum(R[, i] < -0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
   pos_v <- vapply(seq_len(ncol(R)), function(i)
     sum(R[, i] >  0.2 & P[, i] < 0.05, na.rm = TRUE), integer(1))
-  mean_abund <- rowMeans(abund_mtx_all[sp_cols, , drop = FALSE], na.rm = TRUE)
+  mean_abund <- rowMeans(log2(mtx_cpm[sp_cols, , drop = FALSE] + 1), na.rm = TRUE)  # true mean log2(CPM+1)
 
   HeatmapAnnotation(
-    MeanAbund = mean_abund,
+    log2CPM = mean_abund,
     Positive  = anno_barplot(pos_v,
                              gp = gpar(border = NA, fill = "#701145FF", lty = "blank")),
     Negative  = anno_barplot(neg_v,
                              gp = gpar(border = NA, fill = "#008280FF", lty = "blank")),
-    col = list(MeanAbund = colorRamp2(c(0, 4), c("white", "darkgreen"))),
+    col = list(log2CPM = colorRamp2(range(mean_abund, na.rm = TRUE), c("white", "darkgreen"))),
     show_legend = show_legend,
     show_annotation_name = show_legend
   )
@@ -407,7 +407,7 @@ star_vec <- function(p) vapply(p, function(x)
   else if (x < 0.05) "*" else "", character(1))
 
 # top annotation: mean species abundance
-mean_abund <- rowMeans(abund_mtx_all[sp_common, , drop = FALSE], na.rm = TRUE)
+mean_abund <- rowMeans(log2(mtx_cpm[sp_common, , drop = FALSE] + 1), na.rm = TRUE)  # true mean log2(CPM+1)
 top_anno <- HeatmapAnnotation(
   log2CPM = mean_abund,
   col = list(log2CPM = circlize::colorRamp2(range(mean_abund, na.rm = TRUE),
