@@ -374,7 +374,9 @@ pathway_vec <- pathway_all[keep, "Target.pathway"]
 upw_ <- unique(pathway_vec)
 is_grey_ <- is.na(upw_) | upw_ %in% c("Other", "Unannotated")
 col_pathway <- setNames(rep("grey85", length(upw_)), upw_)          # Unannotated / NA
-col_pathway[!is_grey_] <- colorRampPalette(brewer.pal(8, "Set2")[1:7])(sum(!is_grey_))  # drop Set2's grey; reserve grey for "Other"
+pal_pw <- as.character(paletteer::paletteer_d("ggsci::nrc_npg"))    # 10 saturated ggsci colours (grey reserved for "Other")
+n_col_ <- sum(!is_grey_)
+col_pathway[!is_grey_] <- if (n_col_ <= length(pal_pw)) pal_pw[seq_len(n_col_)] else colorRampPalette(pal_pw)(n_col_)
 col_pathway[!is.na(upw_) & upw_ == "Other"] <- "grey70"            # "Other" -> grey
 
 right_anno <- rowAnnotation(
@@ -403,8 +405,7 @@ M_order <- (R_i + R_c) / 2
 M_order[is.na(M_order)] <- 0
 
 star_vec <- function(p) vapply(p, function(x)
-  if (is.na(x)) "" else if (x < 0.001) "***" else if (x < 0.01) "**"
-  else if (x < 0.05) "*" else "", character(1))
+  if (is.na(x)) "" else if (x < 0.05) "*" else "", character(1))  # single star for p < 0.05 (less crowded)
 
 # top annotation: mean species abundance
 mean_abund <- rowMeans(log2(mtx_cpm[sp_common, , drop = FALSE] + 1), na.rm = TRUE)  # true mean log2(CPM+1)
