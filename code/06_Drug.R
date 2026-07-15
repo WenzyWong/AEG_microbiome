@@ -158,7 +158,7 @@ ht_samp <- Heatmap(
 lgd_split_s <- Legend(title = "Cell half", labels = c("Left - pRRophetic", "Right - CaDRReS"),
                       legend_gp = gpar(fill = c("grey75", "grey45")))
 
-pdf(file.path(DIR_FIG, "Heatmap_response_both_samples.pdf"), width = 9, height = 12)
+cairo_pdf(file.path(DIR_FIG, "Heatmap_response_both_samples.pdf"), width = 9, height = 12)
 draw(ht_samp, merge_legends = TRUE, heatmap_legend_side = "right",
      annotation_legend_side = "right", annotation_legend_list = list(lgd_split_s))
 dev.off()
@@ -189,6 +189,11 @@ drug_anno <- build_pathway_annotation(rownames(cor_r_pRRophetic), gdsc_target)
 cor_r_pRRophetic <- apply_rename(cor_r_pRRophetic, drug_anno$rename_map)
 cor_p_pRRophetic <- apply_rename(cor_p_pRRophetic, drug_anno$rename_map)
 pathway_all <- drug_anno$pathway_all
+
+# Snapshot the FULL (unfiltered) pRRophetic correlation matrices BEFORE any drug
+# selection, for the supplementary global heatmap (Heatmap_drug_both_unfiltered.pdf).
+cor_r_pRRophetic_full <- cor_r_pRRophetic
+cor_p_pRRophetic_full <- cor_p_pRRophetic
 
 # Filter
 keep <- rownames(cor_r_pRRophetic)[sig_in(cor_r_pRRophetic, cor_p_pRRophetic)]
@@ -233,6 +238,15 @@ cor_p_pRRophetic   <- apply_rename(cor_p_pRRophetic, drug_anno$rename_map)
 cor_r_cadrres <- apply_rename(cor_r_cadrres, drug_anno$rename_map)
 cor_p_cadrres <- apply_rename(cor_p_cadrres, drug_anno$rename_map)
 pathway_all <- drug_anno$pathway_all
+
+# Snapshot the FULL (unfiltered) CaDRReS matrices + the union-based pathway table
+# for the supplementary global heatmap. Also re-harmonise the pRRophetic full copy
+# with the union rename map so drug names match across the two full matrices.
+cor_r_cadrres_full <- cor_r_cadrres
+cor_p_cadrres_full <- cor_p_cadrres
+cor_r_pRRophetic_full <- apply_rename(cor_r_pRRophetic_full, drug_anno$rename_map)
+cor_p_pRRophetic_full <- apply_rename(cor_p_pRRophetic_full, drug_anno$rename_map)
+pathway_all_full <- drug_anno$pathway_all
 
 # Filter: significant in either panel
 common_drugs <- intersect(rownames(cor_r_pRRophetic), rownames(cor_r_cadrres))
@@ -404,13 +418,112 @@ lgd_split <- Legend(title = "Cell half", labels = c("Left – pRRophetic", "Righ
 lgd_pw <- Legend(title = "Pathway (node = drug count)", labels = pw_levels,
                  legend_gp = gpar(fill = pw_col[pw_levels]))
 
-pdf(file.path(DIR_FIG, "Heatmap_drug_both.pdf"), width = 10, height = 8)
+cairo_pdf(file.path(DIR_FIG, "Heatmap_drug_both.pdf"), width = 10, height = 8)
 draw(ht_both,
      merge_legends          = TRUE,
      heatmap_legend_side    = "right",
      annotation_legend_side = "right",
      annotation_legend_list = list(lgd_split, lgd_pw))
 dev.off()
+
+# ---- Supplementary: UNFILTERED global split-cell heatmap -----------------------
+# Same drugs x species split-cell heatmap as Heatmap_drug_both.pdf above, but with
+# NO drug selection at all: no significance filter, no cross-method concordance
+# filter, no readable-name (FDA-style) filter. Every drug shared by pRRophetic and
+# CaDRReS is drawn, to show the global microbe - drug-response correlation landscape.
+# Built entirely from the *_full snapshots taken before filtering, so it does not
+# depend on / alter the filtered objects used for the main figure.
+keep_all      <- intersect(rownames(cor_r_pRRophetic_full), rownames(cor_r_cadrres_full))
+sp_common_all <- intersect(colnames(cor_r_pRRophetic_full), colnames(cor_r_cadrres_full))
+
+R_i_all <- cor_r_pRRophetic_full[keep_all, sp_common_all, drop = FALSE]
+R_c_all <- cor_r_cadrres_full[keep_all,   sp_common_all, drop = FALSE]
+P_i_all <- cor_p_pRRophetic_full[keep_all, sp_common_all, drop = FALSE]
+P_c_all <- cor_p_cadrres_full[keep_all,   sp_common_all, drop = FALSE]
+
+rng_all      <- range(c(R_i_all, R_c_all), na.rm = TRUE)
+col_fun_all  <- colorRamp2(seq(-max(abs(rng_all)), max(abs(rng_all)), length.out = 11),
+                           rev(brewer.pal(11, "RdBu")))
+fill_col_all <- function(v) { z <- col_fun_all(v); z[is.na(z)] <- "grey95"; z }
+
+M_order_all <- (R_i_all + R_c_all) / 2
+M_order_all[is.na(M_order_all)] <- 0
+
+# pathway annotation for ALL drugs (colour bar; Sankey dropped -- too dense here)
+pathway_vec_all <- pathway_all_full[keep_all, "Target.pathway"]
+pathway_vec_all[is.na(pathway_vec_all)] <- "Unannotated"
+upw_all     <- unique(pathway_vec_all)
+is_grey_all <- upw_all %in% c("Other", "Unannotated")
+col_pathway_all <- setNames(rep("grey85", length(upw_all)), upw_all)
+n_col_all <- sum(!is_grey_all)
+col_pathway_all[!is_grey_all] <- if (n_col_all <= length(pal_pw)) pal_pw[seq_len(n_col_all)] else colorRampPalette(pal_pw)(n_col_all)
+col_pathway_all[upw_all == "Other"] <- "grey70"
+
+# top annotation: mean species abundance (identical convention to the main heatmap)
+mean_abund_all <- rowMeans(log2(mtx_cpm[sp_common_all, , drop = FALSE] + 1), na.rm = TRUE)
+top_anno_all <- HeatmapAnnotation(
+  log2CPM = mean_abund_all,
+  col = list(log2CPM = circlize::colorRamp2(range(mean_abund_all, na.rm = TRUE),
+                                            c("white", "darkgreen"))),
+  show_annotation_name = TRUE)
+
+right_anno_all <- rowAnnotation(
+  Pathway = pathway_vec_all,
+  col = list(Pathway = col_pathway_all),
+  show_annotation_name = TRUE)
+
+cell_w_all <- 6.5     # column width (mm)
+cell_h_all <- 2.6     # row height (mm): shorter, since all drugs are shown
+
+ht_both_all <- Heatmap(
+  M_order_all,
+  name              = "Rs",
+  col               = col_fun_all,
+  column_title      = "Global microbe - drug-response correlation (unfiltered)   (cell: left = pRRophetic | right = CaDRReS)",
+  column_title_gp   = gpar(fontsize = 10),
+  rect_gp           = gpar(type = "none"),
+  width             = ncol(M_order_all) * unit(cell_w_all, "mm"),
+  height            = nrow(M_order_all) * unit(cell_h_all, "mm"),
+  row_names_gp      = gpar(fontsize = 4),
+  column_names_gp   = gpar(fontsize = 8),
+  show_row_names    = TRUE,
+  show_column_names = TRUE,
+  cluster_rows      = TRUE,
+  cluster_columns   = TRUE,
+  top_annotation    = top_anno_all,
+  right_annotation  = right_anno_all,
+  layer_fun = function(j, i, x, y, w, h, fill) {
+    ri <- ComplexHeatmap::pindex(R_i_all, i, j)
+    rc <- ComplexHeatmap::pindex(R_c_all, i, j)
+    pi <- ComplexHeatmap::pindex(P_i_all, i, j)
+    pc <- ComplexHeatmap::pindex(P_c_all, i, j)
+    bw <- w * (1 - gap_frac)
+    bh <- h * (1 - gap_frac)
+    grid.rect(x = x - bw/4, y = y, width = bw/2, height = bh,
+              gp = gpar(fill = fill_col_all(ri), col = NA))   # left  = pRRophetic
+    grid.rect(x = x + bw/4, y = y, width = bw/2, height = bh,
+              gp = gpar(fill = fill_col_all(rc), col = NA))   # right = CaDRReS
+    grid.rect(x = x, y = y, width = bw, height = bh,
+              gp = gpar(fill = NA, col = "grey70", lwd = 0.3))
+    grid.text(star_vec(pi), x - bw/4, y, gp = gpar(fontsize = 3, col = "black"))
+    grid.text(star_vec(pc), x + bw/4, y, gp = gpar(fontsize = 3, col = "black"))
+  },
+  show_heatmap_legend = TRUE)
+
+lgd_split_all <- Legend(title = "Cell half", labels = c("Left - pRRophetic", "Right - CaDRReS"),
+                        legend_gp = gpar(fill = c("grey75", "grey45")))
+
+n_drug_all <- nrow(M_order_all)
+cairo_pdf(file.path(DIR_FIG, "Heatmap_drug_both_unfiltered.pdf"),
+          width = 11, height = max(8, 0.12 * n_drug_all + 3))
+draw(ht_both_all,
+     merge_legends          = TRUE,
+     heatmap_legend_side    = "right",
+     annotation_legend_side = "right",
+     annotation_legend_list = list(lgd_split_all))
+dev.off()
+cat("Supplementary unfiltered heatmap drugs:", n_drug_all,
+    " species:", ncol(M_order_all), "\n")
 
 # ---- Per-microbe drug-sensitivity volcano (median-split, both methods) ------
 # For each microbe shown in the drug heatmap and each method, split the samples
@@ -462,48 +575,101 @@ volc$dir <- with(volc, ifelse(p < 0.05 & sensdiff > 0, "Resistant",
                        ifelse(p < 0.05 & sensdiff < 0, "Sensitive", "NS")))
 volc$dir <- factor(volc$dir, levels = c("Resistant", "Sensitive", "NS"))
 
-# N = drugs the high-abundance group is more sensitive to (red label, per panel)
+# Per-method, per-microbe N: number of drugs the high-abundance group is more
+# SENSITIVE to (dir == "Sensitive") and more RESISTANT to (dir == "Resistant").
+# Both directions are annotated in each facet.
 volc_N <- aggregate(dir ~ method + microbe, data = volc,
                     FUN = function(x) sum(x == "Sensitive"))
 names(volc_N)[3] <- "N"
-volc_N$lab <- paste0("N = ", volc_N$N)
+volc_NR <- aggregate(dir ~ method + microbe, data = volc,
+                     FUN = function(x) sum(x == "Resistant"))
+names(volc_NR)[3] <- "N"
 
-vol_red  <- brewer.pal(11, "RdBu")[2]    # red  = resistant
-vol_blue <- brewer.pal(11, "RdBu")[10]   # blue = sensitive
-vol_cols <- c(Resistant = vol_red, Sensitive = vol_blue, NS = "grey78")
+vol_red        <- brewer.pal(11, "RdBu")[2]    # pRRophetic resistant (saturated red)
+vol_blue       <- brewer.pal(11, "RdBu")[10]   # pRRophetic sensitive (saturated blue)
+vol_red_light  <- brewer.pal(11, "RdBu")[4]    # CaDRReS   resistant (light red)
+vol_blue_light <- brewer.pal(11, "RdBu")[8]    # CaDRReS   sensitive (light blue)
 
-# Tall layout: one ROW per microbe, one COLUMN per method (2 methods).
-# facet_grid(microbe ~ method, scales = "free") frees x per method-column (the
-# two methods live on different SD-unit ranges) and y per microbe-row.
-volc$method   <- factor(volc$method,   levels = c("pRRophetic", "CaDRReS"))
-volc_N$method <- factor(volc_N$method, levels = c("pRRophetic", "CaDRReS"))
+# Merged layout: BOTH methods overlaid in ONE volcano per microbe, microbes laid
+# out horizontally in 3 rows (facet_wrap(~ microbe, nrow = 3)). Colour encodes
+# method x direction: pRRophetic keeps the original saturated red/blue, while
+# CaDRReS's significant points use light red / light blue so the two methods stay
+# distinguishable; non-significant points of either method share a single grey.
+# (Both methods' sensdiff is in per-drug z SD units, so they share one x-axis.)
+volc$method <- factor(volc$method, levels = c("pRRophetic", "CaDRReS"))
+volc$grp <- "NS"
+volc$grp[volc$method == "pRRophetic" & volc$dir == "Resistant"] <- "pRRophetic Resistant"
+volc$grp[volc$method == "pRRophetic" & volc$dir == "Sensitive"] <- "pRRophetic Sensitive"
+volc$grp[volc$method == "CaDRReS"    & volc$dir == "Resistant"] <- "CaDRReS Resistant"
+volc$grp[volc$method == "CaDRReS"    & volc$dir == "Sensitive"] <- "CaDRReS Sensitive"
+grp_levels <- c("pRRophetic Resistant", "pRRophetic Sensitive",
+                "CaDRReS Resistant",    "CaDRReS Sensitive", "NS")
+volc$grp <- factor(volc$grp, levels = grp_levels)
+vol_cols <- c("pRRophetic Resistant" = vol_red,
+              "pRRophetic Sensitive" = vol_blue,
+              "CaDRReS Resistant"    = vol_red_light,
+              "CaDRReS Sensitive"    = vol_blue_light,
+              "NS"                   = "grey78")
+
+# draw order: NS at the bottom, then CaDRReS, pRRophetic (saturated) on top
+draw_rank <- ifelse(volc$grp == "NS", 0L,
+              ifelse(volc$method == "CaDRReS", 1L, 2L))
+volc <- volc[order(draw_rank), ]
+
+# N labels per facet: SENSITIVE counts (blue, top-left) and RESISTANT counts
+# (red, top-right); saturated colour = pRRophetic, light colour = CaDRReS.
+mk_Nlab <- function(df) {
+  df$method <- factor(df$method, levels = c("pRRophetic", "CaDRReS"))
+  df$lab    <- paste0(df$method, ": N = ", df$N)
+  df
+}
+volc_N  <- mk_Nlab(volc_N)    # sensitive
+volc_NR <- mk_Nlab(volc_NR)   # resistant
+volc_Ns_i <- volc_N [volc_N $method == "pRRophetic", ]  # sensitive, pRRophetic (blue)
+volc_Ns_c <- volc_N [volc_N $method == "CaDRReS",    ]  # sensitive, CaDRReS   (light blue)
+volc_Nr_i <- volc_NR[volc_NR$method == "pRRophetic", ]  # resistant, pRRophetic (red)
+volc_Nr_c <- volc_NR[volc_NR$method == "CaDRReS",    ]  # resistant, CaDRReS   (light red)
 
 p_volc <- ggplot(volc, aes(sensdiff, -log10(p))) +
   geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40", linewidth = 0.3) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey40", linewidth = 0.3) +
-  geom_point(aes(colour = dir), size = 0.9, alpha = 0.8) +
-  geom_text(data = volc_N, aes(x = -Inf, y = Inf, label = lab), inherit.aes = FALSE,
-            colour = "black", hjust = -0.15, vjust = 1.5, size = 2.6) +
-  scale_colour_manual(values = vol_cols, name = NULL,
-                      breaks = c("Resistant", "Sensitive")) +
-  facet_grid(microbe ~ method, scales = "free") +
+  geom_point(aes(colour = grp), size = 0.9, alpha = 0.8) +
+  geom_text(data = volc_Ns_i, aes(x = -Inf, y = Inf, label = lab), inherit.aes = FALSE,
+            colour = vol_blue,       hjust = -0.1, vjust = 1.4, size = 2.3) +
+  geom_text(data = volc_Ns_c, aes(x = -Inf, y = Inf, label = lab), inherit.aes = FALSE,
+            colour = vol_blue_light, hjust = -0.1, vjust = 2.9, size = 2.3) +
+  geom_text(data = volc_Nr_i, aes(x = Inf, y = Inf, label = lab), inherit.aes = FALSE,
+            colour = vol_red,        hjust = 1.1,  vjust = 1.4, size = 2.3) +
+  geom_text(data = volc_Nr_c, aes(x = Inf, y = Inf, label = lab), inherit.aes = FALSE,
+            colour = vol_red_light,  hjust = 1.1,  vjust = 2.9, size = 2.3) +
+  scale_colour_manual(values = vol_cols, name = "Method & direction",
+                      breaks = grp_levels[1:4]) +
+  facet_wrap(~ microbe, nrow = 3, scales = "free") +
   labs(x = "Sensitivity difference (median high - low, per-drug z)",
-       y = "-Log10(p.value)",
-       title = "Per-microbe predicted drug sensitivity by abundance (median split)") +
+       y = "-Log10(p.value)") +
   theme_bw(base_size = 8) +
   theme(aspect.ratio = 1,
         panel.grid.minor = element_blank(),
-        strip.text.x     = element_text(size = 8, face = "bold"),
-        strip.text.y     = element_text(size = 7, face = "italic", angle = 0),
+        strip.text       = element_text(size = 7.5, face = "italic"),
         strip.background  = element_rect(fill = "grey92", colour = NA),
-        legend.position  = "bottom")
+        legend.position  = "right") +
+  guides(colour = guide_legend(ncol = 1, override.aes = list(size = 2.6, alpha = 1)))
 
 n_micro <- nlevels(volc$microbe)
-ggsave(file.path(DIR_FIG, "Volcano_sensdiff_microbe_both.pdf"),
-       plot = p_volc,
-       width  = 7,
-       height = max(6, 1.7 * n_micro + 1),
-       limitsize = FALSE)
+n_col   <- ceiling(n_micro / 3)
+# Render with the base pdf() device (NOT cairo_pdf) so every axis number / text
+# label is written as its own text block -> an independent, editable text object in
+# Illustrator. cairo_pdf batches the glyphs so individual tick numbers cannot be
+# selected separately. base pdf() alone leaves the fonts non-embedded ("Custom"
+# encoding), so embed them afterwards with Ghostscript (embedFonts) -> independent
+# text objects AND embedded fonts, avoiding the broken-text issue in Illustrator.
+volc_pdf <- file.path(DIR_FIG, "Volcano_sensdiff_microbe_both.pdf")
+pdf(volc_pdf, width = max(8, 2.1 * n_col + 1.4), height = 9, useDingbats = FALSE)
+print(p_volc)
+dev.off()
+# -dPDFSETTINGS=/prepress is required for gs to actually embed the standard-14
+# Helvetica (subsetted Type 1C); text stays real, editable, and per-label independent.
+embedFonts(volc_pdf, options = "-dEmbedAllFonts=true -dPDFSETTINGS=/prepress")
 
 ####
 # EF
@@ -593,7 +759,7 @@ p_dot <- ggplot(ef_dot, aes(x = drug, y = method)) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, colour = 1),
         axis.text.y = element_text(colour = 1),
         panel.grid.minor = element_blank())
-pdf(file.path(DIR_FIG, "A_dot_EF_cor_both.pdf"),
+cairo_pdf(file.path(DIR_FIG, "A_dot_EF_cor_both.pdf"),
     width = max(6, 0.28 * length(lev) + 2), height = 3)
 print(p_dot)
 dev.off()
@@ -617,7 +783,7 @@ venn_both <- list(
   "CaDRReS Resistant" = resistant_cadrres,
   "pRRophetic Resistant"   = resistant_pRRophetic
 )
-pdf(file.path(DIR_FIG, "B_venn.pdf"), width = 6, height = 6)
+cairo_pdf(file.path(DIR_FIG, "B_venn.pdf"), width = 6, height = 6)
 ggvenn(venn_both,
        text_size = 4,
        text_color = "white",
