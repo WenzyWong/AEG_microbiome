@@ -525,6 +525,134 @@ dev.off()
 cat("Supplementary unfiltered heatmap drugs:", n_drug_all,
     " species:", ncol(M_order_all), "\n")
 
+# ---- Cross-cancer (ESCC + STAD) annotations on the AEG global heatmap ------------
+# Combines the content of Fig_drug_direction_heatmap.pdf with the unfiltered AEG
+# heatmap above: ESCC and STAD are attached to the SAME drug rows (keep_all) and the
+# SAME 15 target species as drug-row annotations beside the main AEG heatmap --
+#   * two mini heatmaps (per cancer, columns = pRRophetic | CaDRReS) of the per-drug
+#     mean signed Spearman r across the target species (own diverging scale, since
+#     these species-averaged Rs are smaller than the AEG per-cell values);
+#   * two 100%-stacked bars = fraction of (target-species x method) cells whose
+#     ESCC / STAD correlation sign matches AEG (replicated) vs discordant.
+# ESCC/STAD drug-response predictions come from drugpred/out, microbe CPM matrices
+# from drug_crosscancer/species; corr_by_species() is reused unchanged.
+DIR_SP_CC <- "/data/yzwang/project/AEG_seiri/drug_crosscancer/species/"
+rd_cc <- function(f) as.matrix(read.csv(f, row.names = 1, check.names = FALSE))
+cc_pred <- list(
+  ESCC = list(pRRophetic = rd_cc(file.path(DIR_PRED, "oncopredict_pred_escc.csv")),
+              CaDRReS    = rd_cc(file.path(DIR_PRED, "cadrres_pred_escc.csv"))),
+  STAD = list(pRRophetic = rd_cc(file.path(DIR_PRED, "oncopredict_pred_gc.csv")),
+              CaDRReS    = rd_cc(file.path(DIR_PRED, "cadrres_pred_gc.csv"))))
+cc_ab <- list(
+  ESCC = readRDS(file.path(DIR_SP_CC, "sESCC_CPM.rds")),
+  STAD = rd_cc(file.path(DIR_SP_CC, "sGC_CPM.csv")))
+
+aeg_R_cc <- list(pRRophetic = R_i_all, CaDRReS = R_c_all)   # keep_all x sp_common_all
+cc_R <- list()
+for (cx in names(cc_pred)) for (mt in names(cc_pred[[cx]])) {
+  ab     <- cc_ab[[cx]]
+  sp_use <- intersect(sp_common_all, rownames(ab))
+  samp   <- intersect(colnames(cc_pred[[cx]][[mt]]), colnames(ab))
+  cs <- corr_by_species(cc_pred[[cx]][[mt]], ab[sp_use, , drop = FALSE], samp)$r
+  M  <- matrix(NA_real_, length(keep_all), length(sp_common_all),
+               dimnames = list(keep_all, sp_common_all))
+  dd <- intersect(keep_all, rownames(cs)); ss <- intersect(sp_common_all, colnames(cs))
+  M[dd, ss] <- cs[dd, ss]
+  cc_R[[paste(cx, mt, sep = "_")]] <- M
+}
+
+mean_r_cc <- function(M) rowMeans(M, na.rm = TRUE)
+escc_mat <- cbind(pRRophetic = mean_r_cc(cc_R$ESCC_pRRophetic), CaDRReS = mean_r_cc(cc_R$ESCC_CaDRReS))
+stad_mat <- cbind(pRRophetic = mean_r_cc(cc_R$STAD_pRRophetic), CaDRReS = mean_r_cc(cc_R$STAD_CaDRReS))
+
+# per-drug replication %: sign agreement vs AEG across target species AND both methods
+repl_pct_cc <- function(cx) vapply(keep_all, function(d) {
+  ag <- logical(0)
+  for (mt in c("pRRophetic", "CaDRReS")) {
+    a <- aeg_R_cc[[mt]][d, ]; b <- cc_R[[paste(cx, mt, sep = "_")]][d, ]
+    ok <- is.finite(a) & is.finite(b) & a != 0 & b != 0
+    if (any(ok)) ag <- c(ag, sign(a[ok]) == sign(b[ok]))
+  }
+  if (length(ag) == 0) NA_real_ else 100 * mean(ag)
+}, numeric(1))
+escc_repl <- repl_pct_cc("ESCC"); stad_repl <- repl_pct_cc("STAD")
+escc_bar  <- cbind(ifelse(is.na(escc_repl), 0, escc_repl), ifelse(is.na(escc_repl), 0, 100 - escc_repl))
+stad_bar  <- cbind(ifelse(is.na(stad_repl), 0, stad_repl), ifelse(is.na(stad_repl), 0, 100 - stad_repl))
+
+esc_col <- c("#74ACCE", "#E8830C"); sta_col <- c("#8B87BA", "#F2C300")   # replicated | discordant
+mx_cc <- max(abs(c(escc_mat, stad_mat)), na.rm = TRUE)
+col_fun_cc <- colorRamp2(c(-mx_cc, 0, mx_cc), c("#2166AC", "white", "#B2182B"))
+
+# Pathway colours consistent with the filtered Heatmap_drug_both.pdf: reuse that
+# figure's col_pathway for overlapping pathways; the unfiltered set has more
+# pathways, so the non-overlapping ones keep col_pathway_all's colours.
+col_pathway_cc <- col_pathway_all
+ov_pw <- intersect(names(col_pathway_cc), names(col_pathway))
+col_pathway_cc[ov_pw] <- col_pathway[ov_pw]
+
+right_anno_cc <- rowAnnotation(
+  Pathway = pathway_vec_all,
+  col     = list(Pathway = col_pathway_cc),
+  ESCC = anno_simple(escc_mat, col = col_fun_cc, gp = gpar(col = "grey90")),
+  STAD = anno_simple(stad_mat, col = col_fun_cc, gp = gpar(col = "grey90")),
+  `ESCC repl` = anno_barplot(escc_bar, gp = gpar(fill = esc_col, col = NA),
+                             bar_width = 0.9, ylim = c(0, 100), width = unit(1.0, "cm")),
+  `STAD repl` = anno_barplot(stad_bar, gp = gpar(fill = sta_col, col = NA),
+                             bar_width = 0.9, ylim = c(0, 100), width = unit(1.0, "cm")),
+  show_annotation_name = TRUE, annotation_name_gp = gpar(fontsize = 7),
+  gap = unit(1, "mm"))
+
+ht_both_all_cc <- Heatmap(
+  M_order_all,
+  name              = "Rs",
+  col               = col_fun_all,
+  column_title      = "AEG global heatmap with ESCC / STAD cross-cancer annotations   (cell: left = pRRophetic | right = CaDRReS)",
+  column_title_gp   = gpar(fontsize = 10),
+  rect_gp           = gpar(type = "none"),
+  width             = ncol(M_order_all) * unit(cell_w_all * 0.75, "mm"),   # 75% of previous width
+  height            = nrow(M_order_all) * unit(cell_h_all * 0.6, "mm"),   # 60% of previous height
+  row_names_gp      = gpar(fontsize = 4),
+  column_names_gp   = gpar(fontsize = 8),
+  column_names_rot  = 45,
+  show_row_names    = TRUE,
+  show_column_names = TRUE,
+  cluster_rows      = TRUE,
+  cluster_columns   = TRUE,
+  top_annotation    = top_anno_all,
+  right_annotation  = right_anno_cc,
+  layer_fun = function(j, i, x, y, w, h, fill) {
+    ri <- ComplexHeatmap::pindex(R_i_all, i, j)
+    rc <- ComplexHeatmap::pindex(R_c_all, i, j)
+    pi <- ComplexHeatmap::pindex(P_i_all, i, j)
+    pc <- ComplexHeatmap::pindex(P_c_all, i, j)
+    bw <- w * (1 - gap_frac); bh <- h * (1 - gap_frac)
+    grid.rect(x - bw/4, y, bw/2, bh, gp = gpar(fill = fill_col_all(ri), col = NA))   # left  = pRRophetic
+    grid.rect(x + bw/4, y, bw/2, bh, gp = gpar(fill = fill_col_all(rc), col = NA))   # right = CaDRReS
+    grid.rect(x, y, bw, bh, gp = gpar(fill = NA, col = "grey70", lwd = 0.3))
+    grid.text(star_vec(pi), x - bw/4, y, gp = gpar(fontsize = 3, col = "white"))
+    grid.text(star_vec(pc), x + bw/4, y, gp = gpar(fontsize = 3, col = "white"))
+  },
+  show_heatmap_legend = TRUE)
+
+lgd_cc_scale <- Legend(col_fun = col_fun_cc, title = "ESCC/STAD\nmean Rs")
+lgd_repl     <- Legend(labels = c("ESCC replicated", "ESCC discordant",
+                                  "STAD replicated", "STAD discordant"),
+                       legend_gp = gpar(fill = c(esc_col, sta_col)),
+                       title = "replication bars", ncol = 2)
+
+cairo_pdf(file.path(DIR_FIG, "Heatmap_drug_both_unfiltered_crosscancer.pdf"),
+          width = 9.75, height = max(5, 0.072 * n_drug_all + 1.8))   # 75% width, 60% height
+draw(ht_both_all_cc,
+     merge_legends          = TRUE,
+     heatmap_legend_side    = "right",
+     annotation_legend_side = "right",
+     annotation_legend_list = list(lgd_split_all, lgd_cc_scale, lgd_repl))
+dev.off()
+cat("Cross-cancer combined heatmap: drugs", n_drug_all,
+    " | ESCC repl", round(mean(escc_repl, na.rm = TRUE)),
+    "%  STAD repl", round(mean(stad_repl, na.rm = TRUE)), "%\n")
+
+
 # ---- Per-microbe drug-sensitivity volcano (median-split, both methods) ------
 # For each microbe shown in the drug heatmap and each method, split the samples
 # by that microbe's MEDIAN abundance into high/low groups; for every drug compare
